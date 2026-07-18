@@ -17,12 +17,28 @@ import {
   type FightEvent,
   type FighterState,
   type PowerUpState,
+  type WeaponKind,
 } from './engine'
 import { drawFighter } from './sprite'
+import { drawGunOverlay, drawLightsaberOverlay, drawProjectile } from './weapons'
 import { preloadSprites } from './anim'
 import { drawBurst, drawComicText, drawPowerUp, pickLaunchLine, pickOnomatopoeia } from './comic'
 import { hapticLight, hapticMedium, hapticStrong } from './haptics'
-import { isMuted, setMuted, sfxBlock, sfxLose, sfxMenuConfirm, sfxPowerUp, sfxPunch, sfxSpecial, sfxUnlock, sfxWin } from './audio'
+import {
+  isMuted,
+  setMuted,
+  sfxBlock,
+  sfxBulletHell,
+  sfxDeflect,
+  sfxLose,
+  sfxMenuConfirm,
+  sfxPowerUp,
+  sfxPunch,
+  sfxShoot,
+  sfxSpecial,
+  sfxUnlock,
+  sfxWin,
+} from './audio'
 
 import playIcon from './assets/ui/icons/play-black.png'
 import pauseIcon from './assets/ui/icons/pause-black.png'
@@ -115,7 +131,15 @@ let shake = 0
 let slowMoMs = 0
 let pulseClock = 0
 
+const WEAPONS: { kind: WeaponKind; label: string }[] = [
+  { kind: 'fists', label: 'FISTS' },
+  { kind: 'gun', label: 'GUN' },
+  { kind: 'lightsaber', label: 'SABER' },
+]
+
 const selectedOpponent = ref<EnemyProfile>(ENEMY_ROSTER[0])
+const selectedWeapon = ref<WeaponKind>('fists')
+const opponentWeapon = ref<WeaponKind>('fists')
 const playerRounds = ref(0)
 const opponentRounds = ref(0)
 const roundNumber = ref(1)
@@ -234,9 +258,14 @@ function gestureCancel() {
   window.clearTimeout(holdTimer)
 }
 
+function randomWeapon(): WeaponKind {
+  return WEAPONS[Math.floor(Math.random() * WEAPONS.length)].kind
+}
+
 function chooseOpponent(p: EnemyProfile) {
   sfxMenuConfirm()
   selectedOpponent.value = p
+  opponentWeapon.value = randomWeapon()
   playerRounds.value = 0
   opponentRounds.value = 0
   roundNumber.value = 1
@@ -245,6 +274,7 @@ function chooseOpponent(p: EnemyProfile) {
 
 function rematchSame() {
   sfxMenuConfirm()
+  opponentWeapon.value = randomWeapon()
   playerRounds.value = 0
   opponentRounds.value = 0
   roundNumber.value = 1
@@ -257,7 +287,7 @@ async function startRound() {
     await preloadSprites([DEFAULT_PLAYER_ID, DEFAULT_RIVAL_ID])
     spritesReady.value = true
   }
-  const c = new FightController(DEFAULT_PLAYER_ID, selectedOpponent.value, DEFAULT_RIVAL_ID)
+  const c = new FightController(DEFAULT_PLAYER_ID, selectedOpponent.value, DEFAULT_RIVAL_ID, selectedWeapon.value, opponentWeapon.value)
   controller.value = c
   backdrop = generateBackdrop(ARENA_W, ARENA_H, GROUND_Y, Math.floor(Math.random() * 1e9))
   bursts.length = 0
@@ -431,6 +461,18 @@ function handleEvent(ev: FightEvent) {
     hapticLight()
     const label = ev.powerUpKind === 'slide' ? 'SLIDE KICK!' : 'LEAPFROG!'
     comicTexts.push({ id: effectId++, x: ev.x, y: ev.y - 8, age: 0, life: TEXT_LIFE, seed: effectId, text: label, size: 20 })
+  } else if (ev.type === 'shoot') {
+    sfxShoot()
+    hapticLight()
+  } else if (ev.type === 'bullethell') {
+    sfxBulletHell()
+    hapticStrong()
+    comicTexts.push({ id: effectId++, x: ev.x, y: ev.y - 8, age: 0, life: LAUNCH_TEXT_LIFE, seed: effectId, text: 'UNLOAD!!', size: 30 })
+    shake = 14
+  } else if (ev.type === 'deflect') {
+    sfxDeflect()
+    hapticLight()
+    bursts.push({ id: effectId++, x: ev.x, y: ev.y, age: 0, life: BURST_LIFE * 0.6, seed: effectId, big: false })
   }
 }
 
@@ -470,6 +512,12 @@ function render(c: FightController) {
 
   const all: FighterState[] = [c.player, c.opponent].sort((f1, f2) => f1.x - f2.x)
   for (const f of all) drawFighter(ctx, f, f.isPlayer)
+  for (const f of all) {
+    drawGunOverlay(ctx, f)
+    drawLightsaberOverlay(ctx, f)
+  }
+
+  for (const p of c.projectiles) drawProjectile(ctx, p)
 
   drawSpotlight(ctx, midX)
 
@@ -687,6 +735,19 @@ onBeforeUnmount(() => {
 
     <!-- Opponent select -->
     <div v-else-if="screen === 'select'" class="screen select-screen dither-bg">
+      <h2 class="select-title">CHOOSE YOUR LOADOUT</h2>
+      <div class="weapon-picker">
+        <button
+          v-for="w in WEAPONS"
+          :key="w.kind"
+          class="pixel-btn weapon-btn"
+          :class="selectedWeapon === w.kind ? 'green' : 'black'"
+          @click="selectedWeapon = w.kind"
+        >
+          {{ w.label }}
+        </button>
+      </div>
+
       <h2 class="select-title">CHOOSE YOUR RIVAL</h2>
       <div class="rival-grid">
         <button v-for="p in ENEMY_ROSTER" :key="p.id" class="rival-card pixel-panel black" @click="chooseOpponent(p)">
@@ -698,6 +759,7 @@ onBeforeUnmount(() => {
           </div>
         </button>
       </div>
+      <p class="select-note">RIVAL'S WEAPON IS DRAWN AT RANDOM EACH MATCH</p>
       <button class="pixel-btn black back-btn" @click="goTitle">BACK</button>
     </div>
 
@@ -967,6 +1029,23 @@ onBeforeUnmount(() => {
   letter-spacing: 1px;
   margin: 0;
   text-align: center;
+}
+.weapon-picker {
+  display: flex;
+  gap: 10px;
+}
+.weapon-btn {
+  padding: 8px 16px;
+  font-size: 12px;
+}
+.select-note {
+  font-family: var(--font-body);
+  font-size: 9px;
+  letter-spacing: 0.5px;
+  color: var(--c-ink-soft);
+  opacity: 0.65;
+  text-align: center;
+  margin: 0;
 }
 .rival-grid {
   display: grid;

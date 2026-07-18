@@ -73,6 +73,21 @@ export function sfxBlock() {
   playTone({ freq: 500, duration: 0.05, type: 'triangle', gain: 0.06 })
 }
 
+export function sfxShoot() {
+  playTone({ freq: 620, duration: 0.05, type: 'sawtooth', gain: 0.06, slideTo: 220 })
+}
+
+export function sfxBulletHell() {
+  playTone({ freq: 700, duration: 0.05, type: 'sawtooth', gain: 0.08, slideTo: 180 })
+  for (let i = 1; i < 5; i++) {
+    setTimeout(() => playTone({ freq: 640 - i * 30, duration: 0.05, type: 'sawtooth', gain: 0.06, slideTo: 160 }), i * 40)
+  }
+}
+
+export function sfxDeflect() {
+  playTone({ freq: 900, duration: 0.06, type: 'triangle', gain: 0.09, slideTo: 1400 })
+}
+
 export function sfxPowerUp() {
   const notes = [440, 660, 880]
   notes.forEach((f, i) => setTimeout(() => playTone({ freq: f, duration: 0.09, type: 'triangle', gain: 0.08 }), i * 55))

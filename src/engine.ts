@@ -81,8 +81,32 @@ export interface PowerUpState {
   taken?: boolean
 }
 
+// Full weapon-based combat: every fighter is equipped with one of these for
+// the whole match. Fists keep the original punch/kick moveset. A gun turns
+// every attack in the same combo timeline into a fired shot instead of a
+// melee hit, with the combo finisher unloading a bullet-hell fan of bolts.
+// A lightsaber reuses the exact same animation timeline as a big-reach,
+// high-damage melee weapon — its glowing blade is drawn procedurally
+// on top of the unarmed swing, so the existing punch/kick frames double as
+// "heavily animation controlled" saber choreography with no new art.
+export type WeaponKind = 'fists' | 'gun' | 'lightsaber'
+
+export const BULLET_SPEED = 360
+const BULLET_LIFE = 1.1 // seconds before a bolt despawns if it hits nothing
+
+export interface Projectile {
+  id: string
+  x: number
+  y: number
+  vx: number
+  vy: number
+  damage: number
+  ownerIsPlayer: boolean
+  life: number
+}
+
 export interface FightEvent {
-  type: 'hit' | 'block' | 'ko' | 'finisher' | 'launch' | 'powerup'
+  type: 'hit' | 'block' | 'ko' | 'finisher' | 'launch' | 'powerup' | 'shoot' | 'bullethell' | 'deflect'
   x: number
   y: number
   who: 'player' | string // 'player' or the opponent's id
@@ -164,6 +188,7 @@ export interface FighterState {
   leapfrogFromX: number
   leapfrogToX: number
   leapfrogElapsed: number
+  weapon: WeaponKind
   // AI bookkeeping (opponent only)
   aiThink: number
   aiWantChain: boolean
@@ -182,6 +207,7 @@ function makeFighter(
   maxHealth: number = MAX_HEALTH,
   dmgMult = 1,
   speedMult = 1,
+  weapon: WeaponKind = 'fists',
 ): FighterState {
   return {
     id: `f${nextId++}`,
@@ -219,6 +245,7 @@ function makeFighter(
     leapfrogFromX: 0,
     leapfrogToX: 0,
     leapfrogElapsed: 0,
+    weapon,
     aiThink: 0,
     aiWantChain: false,
     aiSpeedRatio: 0,
@@ -259,9 +286,17 @@ export class FightController {
   powerUps: PowerUpState[] = []
   private powerUpTimer = 5 + Math.random() * 3
   private nextPowerUpId = 0
+  projectiles: Projectile[] = []
+  private nextProjectileId = 0
 
-  constructor(playerCharacterId: string = DEFAULT_CHARACTER, opponentProfile: EnemyProfile = DEFAULT_AI_PROFILE, opponentCharacterId: string = DEFAULT_CHARACTER) {
-    this.player = makeFighter(true, ARENA_W * 0.32, 1, playerCharacterId, PLAYER_TINT)
+  constructor(
+    playerCharacterId: string = DEFAULT_CHARACTER,
+    opponentProfile: EnemyProfile = DEFAULT_AI_PROFILE,
+    opponentCharacterId: string = DEFAULT_CHARACTER,
+    playerWeapon: WeaponKind = 'fists',
+    opponentWeapon: WeaponKind = 'fists',
+  ) {
+    this.player = makeFighter(true, ARENA_W * 0.32, 1, playerCharacterId, PLAYER_TINT, DEFAULT_AI_PROFILE, MAX_HEALTH, 1, 1, playerWeapon)
     this.opponent = makeFighter(
       false,
       ARENA_W * 0.68,
@@ -272,6 +307,7 @@ export class FightController {
       Math.round(MAX_HEALTH * opponentProfile.healthMult),
       opponentProfile.dmgMult,
       opponentProfile.speedMult,
+      opponentWeapon,
     )
   }
 
@@ -455,6 +491,119 @@ export class FightController {
     }
   }
 
+  /** Lightsaber trades the finisher's launch for extra reach and damage — a lethal-looking but non-launching blade instead. */
+  private weaponAdjustedMove(attacker: FighterState, move: MoveSpec): MoveSpec {
+    if (attacker.weapon !== 'lightsaber') return move
+    return { ...move, range: Math.round(move.range * 1.85), damage: Math.round(move.damage * 1.25), launches: false }
+  }
+
+  private spawnBullet(x: number, y: number, vx: number, vy: number, damage: number, ownerIsPlayer: boolean) {
+    this.projectiles.push({ id: `b${this.nextProjectileId++}`, x, y, vx, vy, damage, ownerIsPlayer, life: BULLET_LIFE })
+  }
+
+  /** Every attack in the same jab/cross/finisher/dash/air timeline fires a shot instead of a melee hit when the attacker is packing a gun. */
+  private fireWeapon(attacker: FighterState) {
+    const originX = attacker.x + attacker.facing * hb(30)
+    const originY = GROUND_Y - SPRITE_H * 0.55
+    const who = attacker.isPlayer ? 'player' : attacker.id
+    const attackerName = attacker.isPlayer ? undefined : attacker.profile.name
+
+    if (attacker.anim === 'comboFinisher') {
+      // Bullet-hell unload: a wide fan of bolts on the combo's big payoff hit.
+      const count = 10
+      const spread = 0.85
+      for (let i = 0; i < count; i++) {
+        const t = i / (count - 1) - 0.5
+        const angle = t * spread
+        this.spawnBullet(
+          originX,
+          originY,
+          Math.cos(angle) * BULLET_SPEED * attacker.facing,
+          Math.sin(angle) * BULLET_SPEED,
+          5,
+          attacker.isPlayer,
+        )
+      }
+      this.events.push({ type: 'bullethell', x: originX, y: originY, who, attackerName })
+      return
+    }
+
+    let vx = BULLET_SPEED * attacker.facing
+    let vy = 0
+    let damage = 6
+    if (attacker.anim === 'comboCross') damage = 8
+    else if (attacker.anim === 'dashAttack') {
+      vx *= 1.3
+      damage = 11
+    } else if (attacker.anim === 'airAttack') {
+      vy = BULLET_SPEED * 0.35
+      damage = 9
+    }
+    this.spawnBullet(originX, originY, vx, vy, damage, attacker.isPlayer)
+    this.events.push({ type: 'shoot', x: originX, y: originY, who, attackerName })
+  }
+
+  private applyProjectileHit(defender: FighterState, p: Projectile) {
+    const dir = p.vx >= 0 ? 1 : -1
+    if (defender.blocking) {
+      defender.x += dir * 3
+      defender.x = Math.max(hb(24), Math.min(ARENA_W - hb(24), defender.x))
+      this.events.push({ type: 'block', x: defender.x, y: p.y, who: defender.isPlayer ? 'player' : defender.id })
+      return
+    }
+    defender.health = Math.max(0, defender.health - p.damage)
+    defender.hitFlash = 140
+    if (!this.isBusy(defender) && defender.grounded) {
+      defender.anim = 'hit'
+      defender.frame = 0
+      defender.frameTimer = 0
+      defender.hitstunTimer = 140
+    }
+    const who = defender.isPlayer ? 'player' : defender.id
+    this.events.push({ type: 'hit', x: p.x, y: p.y, who, damage: p.damage })
+
+    if (defender.health <= 0 && !defender.dead) {
+      defender.dead = true
+      defender.anim = 'death'
+      defender.frame = 0
+      defender.frameTimer = 0
+      this.events.push({ type: 'ko', x: defender.x, y: GROUND_Y - 100, who })
+    }
+  }
+
+  /** Moves every bolt, resolves hits/blocks, and lets a mid-swing lightsaber deflect an incoming shot instead of eating it. */
+  private updateProjectiles(dt: number) {
+    if (this.projectiles.length === 0) return
+    const remaining: Projectile[] = []
+    for (const p of this.projectiles) {
+      p.x += p.vx * dt
+      p.y += p.vy * dt
+      p.life -= dt
+
+      let consumed = p.life <= 0 || p.x < -20 || p.x > ARENA_W + 20 || p.y < -20 || p.y > ARENA_H + 20
+
+      if (!consumed) {
+        const defender = p.ownerIsPlayer ? this.opponent : this.player
+        if (!defender.dead) {
+          const dx = Math.abs(p.x - defender.x)
+          const dy = Math.abs(p.y - (defender.y - SPRITE_H * 0.5))
+          if (dx < hb(20) && dy < hb(45)) {
+            const swinging = defender.weapon === 'lightsaber' && (defender.anim.startsWith('combo') || defender.anim === 'dashAttack')
+            if (swinging) {
+              this.events.push({ type: 'deflect', x: p.x, y: p.y, who: defender.isPlayer ? 'player' : defender.id })
+            } else {
+              this.applyProjectileHit(defender, p)
+            }
+            consumed = true
+          }
+        }
+      }
+
+      if (!consumed) remaining.push(p)
+    }
+    this.projectiles = remaining
+  }
+
   private updateFighter(f: FighterState, dt: number) {
     const dtMs = dt * 1000
 
@@ -543,7 +692,11 @@ export class FightController {
     if (activeMove) {
       if (!f.moveHasHit && f.frame >= activeMove.activeFrame) {
         f.moveHasHit = true
-        this.resolveHit(f, activeMove)
+        if (f.weapon === 'gun' && f.anim !== 'slideKick') {
+          this.fireWeapon(f)
+        } else {
+          this.resolveHit(f, this.weaponAdjustedMove(f, activeMove))
+        }
       }
       this.stepAnim(f, dt)
       const clip = CLIPS[clipFor(f.anim)]
@@ -640,6 +793,7 @@ export class FightController {
     this.updateFighter(this.player, dt)
     this.updateFighter(this.opponent, dt)
     this.updatePowerUps(dt)
+    this.updateProjectiles(dt)
 
     // Classic 1v1 fighters always turn to face their opponent — movement
     // doesn't override it (you can walk backward while still facing them).
@@ -701,7 +855,11 @@ export function runEnemyAI(controller: FightController, ai: FighterState, dt: nu
   const profile = ai.profile
   ai.aiThink -= dt * 1000
   const dist = Math.abs(ai.x - target.x)
-  const strikeRange = hb(58)
+  // A gun-wielder's "reach" is really its bullet range — keep distance and
+  // shoot rather than closing to melee. A lightsaber gets a bigger-but-still-
+  // finite reach. Fists stay at the original tight spacing.
+  const strikeRange = ai.weapon === 'gun' ? hb(320) : ai.weapon === 'lightsaber' ? Math.round(hb(58) * 1.8) : hb(58)
+  const tooCloseMargin = ai.weapon === 'gun' ? hb(150) : hb(30)
   const targetBusy = target.anim.startsWith('combo') || target.anim === 'dashAttack' || target.anim === 'airAttack'
   // The target's active move already connected or whiffed and it's now
   // sitting in recovery frames — the textbook window a real fighting-game
@@ -732,7 +890,7 @@ export function runEnemyAI(controller: FightController, ai: FighterState, dt: nu
       if (ai.grounded && dist < hb(210) && dist > strikeRange + hb(12) && Math.random() < profile.dashBias) {
         controller.swipeStrike(ai, ai.x < target.x ? 1 : -1)
       }
-    } else if (dist < strikeRange - hb(30)) {
+    } else if (dist < strikeRange - tooCloseMargin) {
       ai.moveDir = ai.x < target.x ? -1 : 1
       ai.aiSpeedRatio = 0
       ai.wantBlock = false
