@@ -66,7 +66,7 @@ img, canvas {
 .pixel-btn {
   position: relative;
   border-style: solid;
-  border-width: 12px;
+  border-width: 10px;
   border-image-repeat: stretch;
   image-rendering: pixelated;
   background-color: transparent;
@@ -82,56 +82,59 @@ img, canvas {
 }
 .pixel-btn.green {
   border-image-source: url('./assets/ui/green/button-up.png');
-  border-image-slice: 40 fill;
+  border-image-slice: 4 fill;
 }
 .pixel-btn.green:active {
   border-image-source: url('./assets/ui/green/button-down.png');
 }
 .pixel-btn.red {
   border-image-source: url('./assets/ui/red/button-up.png');
-  border-image-slice: 40 fill;
+  border-image-slice: 4 fill;
 }
 .pixel-btn.red:active {
   border-image-source: url('./assets/ui/red/button-down.png');
 }
 .pixel-btn.black {
   border-image-source: url('./assets/ui/black/button-up.png');
-  border-image-slice: 40 fill;
+  border-image-slice: 4 fill;
 }
 .pixel-btn.black:active {
   border-image-source: url('./assets/ui/black/button-down.png');
 }
 .pixel-btn.blue {
   border-image-source: url('./assets/ui/blue/button-up.png');
-  border-image-slice: 40 fill;
+  border-image-slice: 4 fill;
 }
 .pixel-btn.blue:active {
   border-image-source: url('./assets/ui/blue/button-down.png');
 }
 
-/* ---------- Bubble-kit panel (dialog / card background) ---------- */
+/* ---------- Bubble-kit panel (dialog / card background) ----------
+   panel.png (not popup.png) is used: popup.png has a speech-bubble
+   pointer tail baked into its bottom-left corner that distorts badly
+   when 9-sliced into a plain rectangular card. */
 .pixel-panel {
   border-style: solid;
-  border-width: 16px;
+  border-width: 14px;
   border-image-repeat: stretch;
   image-rendering: pixelated;
 }
 .pixel-panel.black {
-  border-image-source: url('./assets/ui/black/popup.png');
-  border-image-slice: 40 fill;
+  border-image-source: url('./assets/ui/black/panel.png');
+  border-image-slice: 4 fill;
 }
 .pixel-panel.blue {
-  border-image-source: url('./assets/ui/blue/popup.png');
-  border-image-slice: 40 fill;
+  border-image-source: url('./assets/ui/blue/panel.png');
+  border-image-slice: 4 fill;
 }
 
 /* ---------- Bubble-kit health/progress bar ---------- */
 .pixel-bar {
   position: relative;
   border-style: solid;
-  border-width: 8px;
+  border-width: 7px;
   border-image-repeat: stretch;
-  border-image-slice: 40 fill;
+  border-image-slice: 2 fill;
   image-rendering: pixelated;
   height: 22px;
   padding: 3px;
