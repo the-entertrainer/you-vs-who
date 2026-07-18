@@ -1,11 +1,22 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, shallowRef } from 'vue'
 import QRCode from 'qrcode'
-import { LOSE_QUOTES } from './data'
+import { LOSE_QUOTES, WIN_QUOTES } from './data'
 import { DEFAULT_PLAYER_ID, DEFAULT_RIVAL_ID } from './characters'
 import { ENEMY_ROSTER } from './enemies'
 import { generateBackdrop } from './procgen'
-import { ARENA_H, ARENA_W, FightController, GROUND_Y, runEnemyAI, type FightEvent, type FighterState } from './engine'
+import {
+  ARENA_H,
+  ARENA_W,
+  FightController,
+  GROUND_Y,
+  ROUNDS_TO_WIN,
+  ROUND_TIME,
+  runEnemyAI,
+  type EnemyProfile,
+  type FightEvent,
+  type FighterState,
+} from './engine'
 import { drawFighter } from './sprite'
 import { preloadSprites } from './anim'
 import { drawBurst, drawComicText, pickLaunchLine, pickOnomatopoeia } from './comic'
@@ -18,9 +29,8 @@ import homeIcon from './assets/ui/icons/home-black.png'
 import soundOnIcon from './assets/ui/icons/sound-on-black.png'
 import soundOffIcon from './assets/ui/icons/sound-off-black.png'
 
-type Screen = 'desktop-qr' | 'title' | 'fight' | 'results'
-
-const SWARM_SIZE = 14
+type Screen = 'desktop-qr' | 'title' | 'select' | 'fight' | 'results'
+type RoundBanner = '' | 'round' | 'fight' | 'roundwin' | 'roundlose' | 'draw'
 
 const screen = ref<Screen>('title')
 const isMobile = ref(true)
@@ -46,7 +56,14 @@ function detectMobile() {
 function goTitle() {
   sfxMenuConfirm()
   paused.value = false
+  cancelAnimationFrame(rafId)
   screen.value = 'title'
+}
+
+function openSelect() {
+  sfxMenuConfirm()
+  cancelAnimationFrame(rafId)
+  screen.value = 'select'
 }
 
 // ---------------- Fight state ----------------
@@ -81,17 +98,30 @@ const comicTexts = reactive<{ id: number; x: number; y: number; age: number; lif
 let effectId = 0
 let rafId = 0
 let lastTs = 0
+
 const playerHealth = ref(100)
 const playerMaxHealth = ref(100)
-const enemiesRemaining = ref(SWARM_SIZE)
+const opponentHealth = ref(100)
+const opponentMaxHealth = ref(100)
+const roundTimeLeft = ref(ROUND_TIME)
 const comboStep = ref(0)
-const defeatedBy = ref('')
 let backdrop: HTMLCanvasElement | null = null
 let shake = 0
 let slowMoMs = 0
 
+const selectedOpponent = ref<EnemyProfile>(ENEMY_ROSTER[0])
+const playerRounds = ref(0)
+const opponentRounds = ref(0)
+const roundNumber = ref(1)
+const roundBanner = ref<RoundBanner>('')
+const introLock = ref(false)
+
 const healthTier = computed(() => {
   const r = playerHealth.value / playerMaxHealth.value
+  return r > 0.6 ? 'green' : r > 0.3 ? 'yellow' : 'red'
+})
+const opponentHealthTier = computed(() => {
+  const r = opponentHealth.value / opponentMaxHealth.value
   return r > 0.6 ? 'green' : r > 0.3 ? 'yellow' : 'red'
 })
 
@@ -122,7 +152,7 @@ const gesture = reactive({
 let holdTimer = 0
 
 function gestureDown(e: PointerEvent) {
-  if (paused.value) return
+  if (paused.value || introLock.value) return
   gesture.active = true
   gesture.dragging = false
   gesture.blockHeld = false
@@ -196,23 +226,42 @@ function gestureCancel() {
   window.clearTimeout(holdTimer)
 }
 
-async function startFight() {
+function chooseOpponent(p: EnemyProfile) {
+  sfxMenuConfirm()
+  selectedOpponent.value = p
+  playerRounds.value = 0
+  opponentRounds.value = 0
+  roundNumber.value = 1
+  startRound()
+}
+
+function rematchSame() {
+  sfxMenuConfirm()
+  playerRounds.value = 0
+  opponentRounds.value = 0
+  roundNumber.value = 1
+  startRound()
+}
+
+async function startRound() {
   sfxUnlock()
   if (!spritesReady.value) {
     await preloadSprites([DEFAULT_PLAYER_ID, DEFAULT_RIVAL_ID])
     spritesReady.value = true
   }
-  const c = new FightController(DEFAULT_PLAYER_ID)
-  c.spawnSwarm(SWARM_SIZE, ENEMY_ROSTER, DEFAULT_RIVAL_ID)
+  const c = new FightController(DEFAULT_PLAYER_ID, selectedOpponent.value, DEFAULT_RIVAL_ID)
   controller.value = c
   backdrop = generateBackdrop(ARENA_W, ARENA_H, GROUND_Y, Math.floor(Math.random() * 1e9)).canvas
-  enemiesRemaining.value = SWARM_SIZE
-  defeatedBy.value = ''
   bursts.length = 0
   comicTexts.length = 0
   shake = 0
   slowMoMs = 0
   comboStep.value = 0
+  playerHealth.value = c.player.health
+  playerMaxHealth.value = c.player.maxHealth
+  opponentHealth.value = c.opponent.health
+  opponentMaxHealth.value = c.opponent.maxHealth
+  roundTimeLeft.value = c.roundTime
   paused.value = false
   screen.value = 'fight'
   lastTs = 0
@@ -224,25 +273,52 @@ async function startFight() {
     resizeObserver.observe(canvasWrapRef.value)
   }
   fitCanvasToWrap()
-  rafId = requestAnimationFrame(loop)
+  render(c) // static frame so fighters are visible under the round-intro banner
+  playRoundIntro()
 }
 
-function endFight() {
+function playRoundIntro() {
+  introLock.value = true
+  roundBanner.value = 'round'
+  window.setTimeout(() => {
+    roundBanner.value = 'fight'
+    window.setTimeout(() => {
+      roundBanner.value = ''
+      introLock.value = false
+      lastTs = 0
+      rafId = requestAnimationFrame(loop)
+    }, 650)
+  }, 950)
+}
+
+function handleRoundEnd(c: FightController) {
   cancelAnimationFrame(rafId)
-  const c = controller.value
-  if (!c) return
-  if (c.victory) {
+  if (c.draw) {
+    roundBanner.value = 'draw'
+  } else if (c.victory) {
+    playerRounds.value++
+    roundBanner.value = 'roundwin'
     sfxWin()
     hapticStrong()
   } else {
+    opponentRounds.value++
+    roundBanner.value = 'roundlose'
     sfxLose()
     hapticMedium()
   }
-  screen.value = 'results'
+  window.setTimeout(() => {
+    roundBanner.value = ''
+    if (playerRounds.value >= ROUNDS_TO_WIN || opponentRounds.value >= ROUNDS_TO_WIN) {
+      screen.value = 'results'
+    } else {
+      roundNumber.value++
+      startRound()
+    }
+  }, 1600)
 }
 
 function pauseFight() {
-  if (screen.value !== 'fight' || paused.value) return
+  if (screen.value !== 'fight' || paused.value || introLock.value) return
   paused.value = true
   sfxMenuConfirm()
   cancelAnimationFrame(rafId)
@@ -258,7 +334,7 @@ function resumeFight() {
 
 function loop(ts: number) {
   const c = controller.value
-  if (!c || screen.value !== 'fight' || paused.value) return
+  if (!c || screen.value !== 'fight' || paused.value || introLock.value) return
   if (!lastTs) lastTs = ts
   let realDt = (ts - lastTs) / 1000
   lastTs = ts
@@ -281,7 +357,7 @@ function loop(ts: number) {
   }
   c.move(c.player, dir, speedRatio)
 
-  for (const e of c.enemies) runEnemyAI(c, e, dt)
+  runEnemyAI(c, c.opponent, dt)
   c.update(dt)
   comboStep.value = c.player.comboStep
 
@@ -290,7 +366,9 @@ function loop(ts: number) {
 
   playerHealth.value = c.player.health
   playerMaxHealth.value = c.player.maxHealth
-  enemiesRemaining.value = c.enemies.filter((e) => !e.dead).length
+  opponentHealth.value = c.opponent.health
+  opponentMaxHealth.value = c.opponent.maxHealth
+  roundTimeLeft.value = c.roundTime
 
   for (const b of bursts) b.age += realDt * 1000
   while (bursts.length && bursts[0].age > bursts[0].life) bursts.shift()
@@ -302,7 +380,7 @@ function loop(ts: number) {
   render(c)
 
   if (c.over) {
-    endFight()
+    handleRoundEnd(c)
     return
   }
   rafId = requestAnimationFrame(loop)
@@ -330,7 +408,6 @@ function handleEvent(ev: FightEvent) {
     bursts.push({ id: effectId++, x: ev.x, y: ev.y, age: 0, life: BURST_LIFE, seed: effectId, big: false })
     comicTexts.push({ id: effectId++, x: ev.x, y: ev.y - 8, age: 0, life: 1200, seed: effectId, text: 'K.O.!!', size: 30 })
     shake = 16
-    if (ev.who === 'player' && ev.attackerName) defeatedBy.value = ev.attackerName
   }
 }
 
@@ -354,8 +431,7 @@ function render(c: FightController) {
     ctx.fillRect(0, 0, ARENA_W, ARENA_H)
   }
 
-  const all: FighterState[] = [c.player, ...c.enemies]
-  all.sort((f1, f2) => f1.x - f2.x)
+  const all: FighterState[] = [c.player, c.opponent].sort((f1, f2) => f1.x - f2.x)
   for (const f of all) drawFighter(ctx, f, f.isPlayer)
 
   for (const b of bursts) drawBurst(ctx, b.x, b.y, b.age, b.life, b.seed, b.big)
@@ -412,12 +488,11 @@ function setBlock(on: boolean) {
   c.setBlocking(c.player, on)
 }
 
-function rematch() {
-  sfxMenuConfirm()
-  startFight()
-}
-
-const resultQuote = computed(() => LOSE_QUOTES[Math.floor(Math.random() * LOSE_QUOTES.length)])
+const matchWon = computed(() => playerRounds.value > opponentRounds.value)
+const resultQuote = computed(() => {
+  const pool = matchWon.value ? WIN_QUOTES : LOSE_QUOTES
+  return pool[Math.floor(Math.random() * pool.length)]
+})
 
 // ---------------- Prevent scroll / pinch-zoom (mobile game) ----------------
 function blockGesture(e: Event) {
@@ -475,7 +550,7 @@ onBeforeUnmount(() => {
     <div v-if="screen === 'desktop-qr'" class="desktop-wrap dither-bg">
       <div class="pixel-panel black qr-card">
         <h1 class="title-lg">YOU VS WHO?!</h1>
-        <p class="sub">a pixel brawler-vs-swarm, on your phone.</p>
+        <p class="sub">a 1v1 pixel showdown, on your phone.</p>
         <div class="qr-frame">
           <img v-if="qrDataUrl" :src="qrDataUrl" alt="QR code to open You vs Who? on mobile" />
           <div v-else class="qr-fallback">LOADING&hellip;</div>
@@ -489,9 +564,9 @@ onBeforeUnmount(() => {
     <div v-else-if="screen === 'title'" class="screen title-screen dither-bg">
       <div class="title-wrap">
         <h1 class="title-huge">YOU<br />VS<br />WHO?!</h1>
-        <p class="subtitle">{{ SWARM_SIZE }} VILLAINS &middot; BARE HANDS &middot; ONE OF YOU</p>
+        <p class="subtitle">ONE RIVAL &middot; BEST OF 3 &middot; NO MERCY</p>
       </div>
-      <button class="pixel-btn green play-btn" @click="startFight">
+      <button class="pixel-btn green play-btn" @click="openSelect">
         <img :src="playIcon" alt="" class="btn-icon" />
         PLAY
       </button>
@@ -504,7 +579,23 @@ onBeforeUnmount(() => {
       <button class="sound-toggle" @click="toggleSound">
         <img :src="soundOn ? soundOnIcon : soundOffIcon" alt="toggle sound" />
       </button>
-      <p class="footer-tag">CLEAR THE OFFICE OR GO DOWN TRYING</p>
+      <p class="footer-tag">FIRST TO 2 ROUNDS TAKES THE OFFICE</p>
+    </div>
+
+    <!-- Opponent select -->
+    <div v-else-if="screen === 'select'" class="screen select-screen dither-bg">
+      <h2 class="select-title">CHOOSE YOUR RIVAL</h2>
+      <div class="rival-grid">
+        <button v-for="p in ENEMY_ROSTER" :key="p.id" class="rival-card pixel-panel black" @click="chooseOpponent(p)">
+          <div class="rival-portrait" :style="{ background: p.tint }"></div>
+          <span class="rival-name">{{ p.name }}</span>
+          <div class="rival-stats">
+            <span>PWR {{ Math.round(p.dmgMult * 100) }}</span>
+            <span>SPD {{ Math.round(p.speedMult * 100) }}</span>
+          </div>
+        </button>
+      </div>
+      <button class="pixel-btn black back-btn" @click="goTitle">BACK</button>
     </div>
 
     <!-- Fight -->
@@ -518,21 +609,36 @@ onBeforeUnmount(() => {
       @pointerleave="gestureCancel"
     >
       <div class="fight-hud">
-        <div class="hud-side">
-          <span class="hud-name">YOU</span>
+        <div class="hud-side you">
+          <div class="hud-top-row">
+            <span class="hud-name">YOU</span>
+            <div class="round-pips">
+              <span v-for="n in ROUNDS_TO_WIN" :key="'p' + n" class="pip" :class="{ won: n <= playerRounds }"></span>
+            </div>
+          </div>
           <div class="pixel-bar black">
             <div class="pixel-bar-fill" :class="healthTier" :style="{ width: (playerHealth / playerMaxHealth) * 100 + '%' }"></div>
           </div>
           <span v-if="comboStep > 0" class="combo-badge">{{ comboStep }}-HIT!</span>
         </div>
-        <div class="hud-right">
-          <div class="hud-counter">
-            <span class="hud-counter-num">{{ enemiesRemaining }}</span>
-            <span class="hud-counter-label">LEFT</span>
-          </div>
+
+        <div class="hud-center">
+          <span class="hud-timer">{{ Math.ceil(roundTimeLeft) }}</span>
           <button class="pixel-icon-btn" @click="pauseFight">
             <img :src="pauseIcon" alt="pause" />
           </button>
+        </div>
+
+        <div class="hud-side opp">
+          <div class="hud-top-row reverse">
+            <div class="round-pips">
+              <span v-for="n in ROUNDS_TO_WIN" :key="'o' + n" class="pip" :class="{ won: n <= opponentRounds }"></span>
+            </div>
+            <span class="hud-name opp-name">{{ selectedOpponent.name }}</span>
+          </div>
+          <div class="pixel-bar black mirror">
+            <div class="pixel-bar-fill mirror" :class="opponentHealthTier" :style="{ width: (opponentHealth / opponentMaxHealth) * 100 + '%' }"></div>
+          </div>
         </div>
       </div>
 
@@ -542,6 +648,17 @@ onBeforeUnmount(() => {
           <div class="crt-overlay"></div>
         </div>
         <div v-if="gesture.blockHeld" class="block-indicator">GUARDING!</div>
+
+        <!-- Round intro / outcome banner -->
+        <div v-if="roundBanner" class="round-banner-overlay">
+          <div class="round-banner-text" :class="roundBanner">
+            <template v-if="roundBanner === 'round'">ROUND {{ roundNumber }}</template>
+            <template v-else-if="roundBanner === 'fight'">FIGHT!</template>
+            <template v-else-if="roundBanner === 'roundwin'">ROUND WIN!</template>
+            <template v-else-if="roundBanner === 'roundlose'">ROUND LOST</template>
+            <template v-else-if="roundBanner === 'draw'">DRAW!</template>
+          </div>
+        </div>
 
         <!-- Pause overlay -->
         <div v-if="paused" class="pause-overlay">
@@ -567,13 +684,13 @@ onBeforeUnmount(() => {
 
     <!-- Results -->
     <div v-else-if="screen === 'results'" class="screen results-screen dither-bg">
-      <div class="pixel-panel black results-card" v-if="controller">
-        <h2 class="results-title" :class="{ lose: !controller.victory }">{{ controller.victory ? 'CLEARED!!' : 'DEFEATED!!' }}</h2>
-        <p class="results-sub">{{ controller.victory ? `ALL ${SWARM_SIZE} VILLAINS DOWN` : `ENEMIES LEFT: ${enemiesRemaining}` }}</p>
-        <p v-if="!controller.victory && defeatedBy" class="results-sub">FINISHED OFF BY {{ defeatedBy }}</p>
+      <div class="pixel-panel black results-card">
+        <h2 class="results-title" :class="{ lose: !matchWon }">{{ matchWon ? 'YOU WIN!' : 'YOU LOSE!' }}</h2>
+        <p class="results-sub">{{ playerRounds }} &ndash; {{ opponentRounds }} vs {{ selectedOpponent.name }}</p>
         <p class="results-quote">&ldquo;{{ resultQuote }}&rdquo;</p>
         <div class="results-actions">
-          <button class="pixel-btn green" @click="rematch">{{ controller?.victory ? 'GO AGAIN' : 'TRY AGAIN' }}</button>
+          <button class="pixel-btn green" @click="rematchSame">REMATCH</button>
+          <button class="pixel-btn blue" @click="openSelect">CHOOSE RIVAL</button>
           <button class="pixel-btn black" @click="goTitle">
             <img :src="homeIcon" alt="" class="btn-icon" />
             MAIN MENU
@@ -724,6 +841,63 @@ onBeforeUnmount(() => {
   opacity: 0.6;
 }
 
+/* ---------- Opponent select ---------- */
+.select-screen {
+  align-items: center;
+  justify-content: center;
+  gap: 20px;
+  padding: 24px;
+  background: radial-gradient(ellipse at top, var(--c-blue-dark) 0%, var(--c-bg) 70%);
+  color: #fff;
+}
+.select-title {
+  font-family: var(--font-pixel);
+  color: var(--c-yellow);
+  font-size: 18px;
+  letter-spacing: 1px;
+  margin: 0;
+  text-align: center;
+}
+.rival-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 14px;
+  width: 100%;
+  max-width: 360px;
+}
+.rival-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 14px 8px;
+  border: none;
+  cursor: pointer;
+}
+.rival-portrait {
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  border: 2px solid rgba(255, 255, 255, 0.35);
+}
+.rival-name {
+  font-family: var(--font-pixel);
+  font-size: 10px;
+  color: #fff;
+  text-align: center;
+  letter-spacing: 0.5px;
+  line-height: 1.4;
+}
+.rival-stats {
+  display: flex;
+  gap: 8px;
+  font-family: var(--font-body);
+  font-size: 9px;
+  color: var(--c-ink-soft);
+  opacity: 0.8;
+}
+.back-btn { padding: 10px 28px; font-size: 13px; }
+
 /* ---------- Fight ---------- */
 .fight-screen {
   background: #000;
@@ -742,25 +916,37 @@ onBeforeUnmount(() => {
   background: rgba(10, 13, 25, 0.75);
   border-bottom: 2px solid #000;
 }
-.hud-side { display: flex; flex-direction: column; gap: 4px; position: relative; width: 160px; }
-.hud-name { font-family: var(--font-pixel); font-size: 12px; letter-spacing: 0.5px; color: var(--c-blue); }
-.hud-right { display: flex; align-items: center; gap: 10px; }
-.hud-counter {
-  font-family: var(--font-pixel);
-  color: var(--c-yellow);
-  background: rgba(0,0,0,0.5);
-  border: 2px solid var(--c-yellow);
-  border-radius: 50%;
-  width: 46px;
-  height: 46px;
+.hud-side { display: flex; flex-direction: column; gap: 4px; position: relative; width: 42%; }
+.hud-side.opp { align-items: flex-end; }
+.hud-side .pixel-bar { align-self: stretch; width: 100%; }
+.hud-top-row { display: flex; align-items: center; justify-content: space-between; gap: 6px; }
+.hud-top-row.reverse { flex-direction: row-reverse; }
+.hud-name { font-family: var(--font-pixel); font-size: 11px; letter-spacing: 0.5px; color: var(--c-blue); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.hud-name.opp-name { color: var(--c-red); }
+.round-pips { display: flex; gap: 4px; }
+.pip {
+  width: 9px;
+  height: 9px;
+  border: 2px solid var(--c-ink-soft);
+  background: transparent;
+}
+.pip.won { background: var(--c-yellow); border-color: var(--c-yellow); }
+.hud-center {
   display: flex;
   flex-direction: column;
   align-items: center;
-  justify-content: center;
-  line-height: 1;
+  gap: 4px;
+  flex-shrink: 0;
 }
-.hud-counter-num { font-size: 16px; }
-.hud-counter-label { font-family: var(--font-body); font-size: 6px; letter-spacing: 0.5px; opacity: 0.85; }
+.hud-timer {
+  font-family: var(--font-pixel);
+  font-size: 18px;
+  color: var(--c-yellow);
+  min-width: 30px;
+  text-align: center;
+}
+.pixel-bar.mirror,
+.pixel-bar-fill.mirror { transform: scaleX(-1); }
 .combo-badge {
   font-family: var(--font-pixel);
   font-size: 11px;
@@ -826,6 +1012,32 @@ onBeforeUnmount(() => {
   background: var(--c-yellow);
   padding: 3px 12px;
   z-index: 6;
+}
+
+.round-banner-overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+  z-index: 8;
+}
+.round-banner-text {
+  font-family: var(--font-pixel);
+  font-size: 30px;
+  letter-spacing: 1px;
+  color: var(--c-yellow);
+  text-shadow: 3px 3px 0 #000, 3px 3px 0 3px rgba(0, 0, 0, 0.5);
+  animation: bannerPop 0.25s ease-out;
+}
+.round-banner-text.fight { color: var(--c-red); font-size: 36px; }
+.round-banner-text.roundwin { color: var(--c-green); }
+.round-banner-text.roundlose { color: var(--c-red); }
+.round-banner-text.draw { color: var(--c-ink-soft); }
+@keyframes bannerPop {
+  0% { transform: scale(0.5); opacity: 0; }
+  100% { transform: scale(1); opacity: 1; }
 }
 
 .pause-overlay {

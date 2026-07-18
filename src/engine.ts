@@ -12,11 +12,9 @@ export const RUN_SPEED = 236
 export const JUMP_VELOCITY = -380
 export const GRAVITY = 1050
 
-// How many enemies can be actively approaching/attacking the player at
-// once. The rest of the swarm mills around waiting for a slot to open —
-// keeps 10-20 enemies on screen without it being an unplayable dogpile.
-export const MAX_ENGAGED = 3
-export const ENGAGE_RANGE = 260
+// Classic best-of-3 duel structure.
+export const ROUND_TIME = 60 // seconds on the clock per round
+export const ROUNDS_TO_WIN = 2
 
 // Every hitbox/reach/edge-margin distance below was originally tuned against
 // a 132px-wide sprite. SPRITE_W later shrank for the mobile redesign but
@@ -71,15 +69,13 @@ export interface FightEvent {
   type: 'hit' | 'block' | 'ko' | 'finisher' | 'launch'
   x: number
   y: number
-  who: 'player' | string // 'player' or the defeated enemy's id
+  who: 'player' | string // 'player' or the opponent's id
   damage?: number
-  attackerName?: string // set when an enemy is the attacker, for "defeated by" attribution
+  attackerName?: string // set when the opponent is the attacker, for "defeated by" attribution
 }
 
-// Enemy archetype: same stickman, different fighting style. Visually all
-// enemies stay in a warm red/orange/yellow "villain" family (vs. the
-// player's cool blue) so the player is always the one unmistakable figure
-// in a crowd — the behavior profile is what actually tells them apart.
+// Rival archetype: same stickman, different fighting style — a Tekken/MK
+// style roster of one shared sprite recolored and re-tuned per personality.
 export interface EnemyProfile {
   id: string
   name: string
@@ -144,8 +140,7 @@ export interface FighterState {
   launchVX: number
   launchVY: number
   lastHitBy?: string
-  // AI bookkeeping (enemies only)
-  engaged: boolean
+  // AI bookkeeping (opponent only)
   aiThink: number
   aiWantChain: boolean
   aiSpeedRatio: number
@@ -195,7 +190,6 @@ function makeFighter(
     spinAngle: 0,
     launchVX: 0,
     launchVY: 0,
-    engaged: false,
     aiThink: 0,
     aiWantChain: false,
     aiSpeedRatio: 0,
@@ -215,46 +209,29 @@ function clipFor(anim: FighterAnim): AnimName {
   }
 }
 
+/** One best-of-3 duel round: a player and a single AI opponent, Tekken/MK style. */
 export class FightController {
   player: FighterState
-  enemies: FighterState[] = []
-  over = false
-  victory = false
+  opponent: FighterState
+  over = false // this round has ended
+  victory = false // did the player win this round
+  draw = false // round timed out tied, or a simultaneous double-KO
+  roundTime = ROUND_TIME
   events: FightEvent[] = []
 
-  constructor(playerCharacterId: string = DEFAULT_CHARACTER) {
-    this.player = makeFighter(true, ARENA_W * 0.5, 1, playerCharacterId, PLAYER_TINT)
-  }
-
-  /** Spawns the whole swarm at once, spread across both sides of the player. */
-  spawnSwarm(count: number, profiles: EnemyProfile[], characterId: string) {
-    this.enemies = []
-    // Fan the swarm evenly across both sides of the player instead of a
-    // linear offset (which clamps most enemies onto the same edge once the
-    // spread exceeds the arena bounds — looked like a pile-up, not a mob).
-    const margin = hb(24)
-    const gap = hb(60) // keep clear space immediately around the player's start
-    const leftCount = Math.ceil(count / 2)
-    const rightCount = count - leftCount
-    const leftSpan = Math.max(1, this.player.x - gap - margin)
-    const rightSpan = Math.max(1, ARENA_W - margin - (this.player.x + gap))
-
-    for (let i = 0; i < count; i++) {
-      const profile = profiles[i % profiles.length]
-      const onLeft = i % 2 === 0
-      let x: number
-      if (onLeft) {
-        const slot = Math.floor(i / 2)
-        x = margin + (leftSpan * (slot + 0.5)) / leftCount + (Math.random() - 0.5) * 20
-      } else {
-        const slot = Math.floor(i / 2)
-        x = this.player.x + gap + (rightSpan * (slot + 0.5)) / rightCount + (Math.random() - 0.5) * 20
-      }
-      x = Math.max(margin, Math.min(ARENA_W - margin, x))
-      const facing = x < this.player.x ? 1 : -1
-      const e = makeFighter(false, x, facing, characterId, profile.tint, profile, Math.round(MAX_HEALTH * profile.healthMult), profile.dmgMult, profile.speedMult)
-      this.enemies.push(e)
-    }
+  constructor(playerCharacterId: string = DEFAULT_CHARACTER, opponentProfile: EnemyProfile = DEFAULT_AI_PROFILE, opponentCharacterId: string = DEFAULT_CHARACTER) {
+    this.player = makeFighter(true, ARENA_W * 0.32, 1, playerCharacterId, PLAYER_TINT)
+    this.opponent = makeFighter(
+      false,
+      ARENA_W * 0.68,
+      -1,
+      opponentCharacterId,
+      opponentProfile.tint,
+      opponentProfile,
+      Math.round(MAX_HEALTH * opponentProfile.healthMult),
+      opponentProfile.dmgMult,
+      opponentProfile.speedMult,
+    )
   }
 
   private isBusy(f: FighterState): boolean {
@@ -346,27 +323,19 @@ export class FightController {
     return null
   }
 
-  /** Every living fighter on the opposing side of `attacker` (player -> all enemies, enemy -> just the player). */
-  private opponentsOf(attacker: FighterState): FighterState[] {
-    if (attacker.isPlayer) return this.enemies.filter((e) => !e.dead)
-    return this.player.dead ? [] : [this.player]
+  private targetOf(attacker: FighterState): FighterState | null {
+    const defender = attacker.isPlayer ? this.opponent : this.player
+    return defender.dead ? null : defender
   }
 
   private resolveHit(attacker: FighterState, move: MoveSpec) {
-    let best: FighterState | null = null
-    let bestDist = Infinity
-    for (const defender of this.opponentsOf(attacker)) {
-      const dist = Math.abs(attacker.x - defender.x)
-      if (dist > move.range) continue
-      const facingRight = attacker.x < defender.x
-      if ((facingRight && attacker.facing !== 1) || (!facingRight && attacker.facing !== -1)) continue
-      if (dist < bestDist) {
-        bestDist = dist
-        best = defender
-      }
-    }
-    if (!best) return
-    const defender = best
+    const defender = this.targetOf(attacker)
+    if (!defender) return
+    const dist = Math.abs(attacker.x - defender.x)
+    if (dist > move.range) return
+    const facingRight = attacker.x < defender.x
+    if ((facingRight && attacker.facing !== 1) || (!facingRight && attacker.facing !== -1)) return
+
     const dir = attacker.x < defender.x ? 1 : -1
 
     if (defender.blocking) {
@@ -408,7 +377,6 @@ export class FightController {
 
     if (defender.health <= 0 && !defender.dead) {
       defender.dead = true
-      defender.engaged = false
       if (!move.launches) {
         defender.anim = 'death'
         defender.frame = 0
@@ -518,7 +486,6 @@ export class FightController {
     f.blocking = false
 
     if (f.moveDir !== 0) {
-      f.facing = f.moveDir as 1 | -1
       const speed = (WALK_SPEED + (RUN_SPEED - WALK_SPEED) * f.speedRatio) * f.speedMult
       f.x += f.moveDir * speed * dt
       f.x = Math.max(hb(24), Math.min(ARENA_W - hb(24), f.x))
@@ -547,57 +514,48 @@ export class FightController {
     }
   }
 
-  /** Promotes the nearest un-engaged enemy into an open attack slot so the swarm keeps pressure on without dogpiling. */
-  private updateEngagement() {
-    let engagedCount = 0
-    for (const e of this.enemies) {
-      if (e.engaged && (e.dead || Math.abs(e.x - this.player.x) > ENGAGE_RANGE * 1.4)) e.engaged = false
-      if (e.engaged && !e.dead) engagedCount++
-    }
-    if (engagedCount >= MAX_ENGAGED) return
-    const candidates = this.enemies
-      .filter((e) => !e.dead && !e.engaged)
-      .sort((a, b) => Math.abs(a.x - this.player.x) - Math.abs(b.x - this.player.x))
-    for (const c of candidates) {
-      if (engagedCount >= MAX_ENGAGED) break
-      c.engaged = true
-      engagedCount++
-    }
-  }
-
   update(dt: number) {
     if (this.over) return
 
-    this.updateEngagement()
-
-    if (this.player.grounded && !this.isBusy(this.player) && this.player.anim !== 'block' && this.player.moveDir === 0) {
-      const nearest = this.enemies.filter((e) => !e.dead).sort((a, b) => Math.abs(a.x - this.player.x) - Math.abs(b.x - this.player.x))[0]
-      if (nearest) this.player.facing = this.player.x < nearest.x ? 1 : -1
-    }
-    for (const e of this.enemies) {
-      if (e.dead || this.isBusy(e) || e.anim === 'block') continue
-      if (e.moveDir === 0) e.facing = e.x < this.player.x ? 1 : -1
-    }
-
     this.updateFighter(this.player, dt)
-    for (const e of this.enemies) this.updateFighter(e, dt)
+    this.updateFighter(this.opponent, dt)
 
-    const playerDone = this.player.anim === 'death' && this.player.frame >= CLIPS.death.frames.length - 1
-    if (this.player.dead && playerDone) {
+    // Classic 1v1 fighters always turn to face their opponent — movement
+    // doesn't override it (you can walk backward while still facing them).
+    if (this.player.grounded && !this.isBusy(this.player) && this.player.anim !== 'block') {
+      this.player.facing = this.player.x < this.opponent.x ? 1 : -1
+    }
+    if (this.opponent.grounded && !this.isBusy(this.opponent) && this.opponent.anim !== 'block') {
+      this.opponent.facing = this.opponent.x < this.player.x ? 1 : -1
+    }
+
+    if (!this.player.dead && !this.opponent.dead) {
+      this.roundTime = Math.max(0, this.roundTime - dt)
+    }
+
+    const playerDone = this.player.dead && this.player.anim === 'death' && this.player.frame >= CLIPS.death.frames.length - 1
+    const opponentDone = this.opponent.dead && this.opponent.anim === 'death' && this.opponent.frame >= CLIPS.death.frames.length - 1
+
+    if (playerDone || opponentDone) {
       this.over = true
-      this.victory = false
+      this.victory = opponentDone && !playerDone
+      this.draw = playerDone && opponentDone
       return
     }
 
-    if (this.enemies.length > 0 && this.enemies.every((e) => e.dead && e.anim === 'death' && e.frame >= CLIPS.death.frames.length - 1)) {
+    if (this.roundTime <= 0) {
       this.over = true
-      this.victory = true
+      if (this.player.health === this.opponent.health) {
+        this.draw = true
+      } else {
+        this.victory = this.player.health > this.opponent.health
+      }
     }
   }
 }
 
 // ---------------- AI ----------------
-// Move categories available to both the player and every enemy, and how
+// Move categories available to both the player and the opponent, and how
 // they read on the receiving end:
 //   - Jab / Cross     quick pokes, short hitstun, small pushback — pure combo filler
 //   - Finisher        the 3rd combo hit — big damage AND launches the
@@ -607,10 +565,10 @@ export class FightController {
 //                      distance aggressively or punish whiffs
 //   - Air Strike      aerial attack, used to contest jump-ins or start
 //                      offense from above
-// Every EnemyProfile tunes how much an opponent leans on each category —
-// a "Marathoner" dash-strikes constantly, an "Influencer" lives in the
-// air, "Reply-All" never stops chaining jabs — so the swarm doesn't just
-// feel like one enemy copy-pasted twenty times.
+// Every EnemyProfile tunes how much the rival leans on each category and
+// how it plays footsies: proper 1v1 AI needs to poke, punish recovery
+// frames, bait with retreats, and block reads — not just "walk in and
+// swing," which is all a swarm mob needed.
 export function runEnemyAI(controller: FightController, ai: FighterState, dt: number) {
   const target = controller.player
   if (!controller.canAct(ai) || controller.over || target.dead) {
@@ -619,26 +577,24 @@ export function runEnemyAI(controller: FightController, ai: FighterState, dt: nu
     return
   }
 
-  if (!ai.engaged) {
-    // Not their turn to attack yet — drift toward the player slowly so the
-    // swarm visibly closes in, without piling on all at once.
-    const dist = Math.abs(ai.x - target.x)
-    ai.moveDir = dist > hb(70) ? (ai.x < target.x ? 1 : -1) : 0
-    ai.aiSpeedRatio = 0.15
-    ai.wantBlock = false
-    controller.move(ai, ai.moveDir, ai.aiSpeedRatio)
-    controller.setBlocking(ai, false)
-    return
-  }
-
   const profile = ai.profile
   ai.aiThink -= dt * 1000
   const dist = Math.abs(ai.x - target.x)
   const strikeRange = hb(58)
+  const targetBusy = target.anim.startsWith('combo') || target.anim === 'dashAttack' || target.anim === 'airAttack'
+  // The target's active move already connected or whiffed and it's now
+  // sitting in recovery frames — the textbook window a real fighting-game
+  // AI punishes instead of just blocking through it.
+  const targetRecovering = targetBusy && target.moveHasHit
+
+  // React fast to a punishable opening instead of waiting out the normal
+  // "think" cooldown — this is what makes the AI feel alert rather than lagging.
+  if (targetRecovering && dist <= strikeRange + hb(20)) {
+    ai.aiThink = Math.min(ai.aiThink, 35)
+  }
 
   if (ai.aiThink <= 0) {
     ai.aiThink = profile.thinkMin + Math.random() * (profile.thinkMax - profile.thinkMin)
-    const targetBusy = target.anim.startsWith('combo') || target.anim === 'dashAttack' || target.anim === 'airAttack'
 
     if (dist > strikeRange) {
       ai.moveDir = ai.x < target.x ? 1 : -1
@@ -651,20 +607,32 @@ export function runEnemyAI(controller: FightController, ai: FighterState, dt: nu
       ai.moveDir = ai.x < target.x ? -1 : 1
       ai.aiSpeedRatio = 0
       ai.wantBlock = false
-    } else {
+    } else if (targetRecovering) {
+      // Punish: the target just whiffed or is still recovering from a
+      // connected hit — swing now instead of rolling to block.
       ai.moveDir = 0
-      if (targetBusy && Math.random() < profile.blockBias) {
-        ai.wantBlock = true
+      ai.wantBlock = false
+      controller.attack(ai)
+      ai.aiWantChain = Math.random() < profile.chainBias
+    } else if (targetBusy && Math.random() < profile.blockBias) {
+      ai.moveDir = 0
+      ai.wantBlock = true
+    } else {
+      ai.wantBlock = false
+      const roll = Math.random()
+      if (roll < profile.aggression) {
+        ai.moveDir = 0
+        controller.attack(ai)
+        ai.aiWantChain = Math.random() < profile.chainBias
+      } else if (roll < profile.aggression + 0.17 && ai.grounded) {
+        ai.moveDir = 0
+        controller.jump(ai)
+        if (Math.random() < profile.airBias) controller.attack(ai)
       } else {
-        ai.wantBlock = false
-        const roll = Math.random()
-        if (roll < profile.aggression) {
-          controller.attack(ai)
-          ai.aiWantChain = Math.random() < profile.chainBias
-        } else if (roll < profile.aggression + 0.17 && ai.grounded) {
-          controller.jump(ai)
-          if (Math.random() < profile.airBias) controller.attack(ai)
-        }
+        // Footsies: back off out of strike range to reset spacing and bait
+        // a whiff, instead of always trading blows at point-blank.
+        ai.moveDir = ai.x < target.x ? -1 : 1
+        ai.aiSpeedRatio = 0.3
       }
     }
   }
