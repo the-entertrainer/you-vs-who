@@ -91,6 +91,10 @@ export interface PowerUpState {
 // "heavily animation controlled" saber choreography with no new art.
 export type WeaponKind = 'fists' | 'gun' | 'lightsaber'
 
+// Matches the number of pixel-art gun sprites under src/assets/guns/ — each
+// gun-wielding fighter is dealt one at random for the match (see weapons.ts).
+export const GUN_VARIANT_COUNT = 12
+
 export const BULLET_SPEED = 360
 const BULLET_LIFE = 1.1 // seconds before a bolt despawns if it hits nothing
 
@@ -189,6 +193,7 @@ export interface FighterState {
   leapfrogToX: number
   leapfrogElapsed: number
   weapon: WeaponKind
+  gunVariant: number // which pixel-art gun sprite to draw when weapon === 'gun'
   // AI bookkeeping (opponent only)
   aiThink: number
   aiWantChain: boolean
@@ -246,6 +251,7 @@ function makeFighter(
     leapfrogToX: 0,
     leapfrogElapsed: 0,
     weapon,
+    gunVariant: Math.floor(Math.random() * GUN_VARIANT_COUNT),
     aiThink: 0,
     aiWantChain: false,
     aiSpeedRatio: 0,

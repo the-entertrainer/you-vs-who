@@ -1,7 +1,8 @@
-// Procedurally drawn weapon overlays layered on top of the existing
-// stickman sprite — no new character art, just glowing shapes anchored to
-// an approximate hand position and driven by the same animation timeline
-// the fists already use.
+// Weapon overlays layered on top of the existing stickman sprite — the guns
+// are real pixel-art (a 12-gun "High Res" pack), the lightsaber and bullets
+// are procedurally drawn glow shapes. Everything anchors to an approximate
+// hand position and is driven by the same animation timeline the fists
+// already use — no new character art or per-move rigging needed.
 
 import type { FighterState, Projectile } from './engine'
 import { SPRITE_H } from './engine'
@@ -12,29 +13,43 @@ function handAnchor(f: FighterState): [number, number] {
   return [f.x, f.y - SPRITE_H * 0.4]
 }
 
-/** A stubby blaster in the fighter's hand, with a bright muzzle flash on the frame it fires. */
+// 12 hand-drawn pixel guns, all sourced facing right — matches this game's
+// facing=1 convention, so no per-sprite mirroring correction is needed.
+const gunModules = import.meta.glob('./assets/guns/*.png', { eager: true, import: 'default' }) as Record<string, string>
+const GUN_SRCS = Object.entries(gunModules)
+  .sort(([a], [b]) => a.localeCompare(b, undefined, { numeric: true }))
+  .map(([, url]) => url)
+const GUN_IMAGES: HTMLImageElement[] = GUN_SRCS.map((src) => {
+  const img = new Image()
+  img.src = src
+  return img
+})
+const GUN_DISPLAY_W = 34
+
+/** The fighter's randomly-dealt pixel-art gun, held forward, with a bright muzzle flash on the frame it fires. */
 export function drawGunOverlay(ctx: CanvasRenderingContext2D, f: FighterState) {
-  if (f.weapon !== 'gun') return
+  if (f.weapon !== 'gun' || GUN_IMAGES.length === 0) return
+  const img = GUN_IMAGES[f.gunVariant % GUN_IMAGES.length]
   const [hx, hy] = handAnchor(f)
   ctx.save()
   ctx.translate(hx, hy)
   ctx.scale(f.facing, 1)
 
-  ctx.fillStyle = '#1a1d2b'
-  ctx.fillRect(2, -3, 16, 7)
-  ctx.fillStyle = '#3a4160'
-  ctx.fillRect(2, -3, 16, 3)
-  ctx.fillStyle = '#0d0f18'
-  ctx.fillRect(16, -1, 8, 3)
+  const aspect = img.naturalWidth > 0 ? img.naturalHeight / img.naturalWidth : 0.35
+  const h = GUN_DISPLAY_W * aspect
+  if (img.complete && img.naturalWidth > 0) {
+    ctx.drawImage(img, -6, -h / 2, GUN_DISPLAY_W, h)
+  }
 
   const firing = ATTACK_ANIMS.has(f.anim) && !f.moveHasHit && f.frame >= (f.anim === 'comboFinisher' ? 2 : 1)
   if (firing) {
-    const grad = ctx.createRadialGradient(24, 0, 0, 24, 0, 14)
+    const mx = GUN_DISPLAY_W - 8
+    const grad = ctx.createRadialGradient(mx, 0, 0, mx, 0, 14)
     grad.addColorStop(0, 'rgba(255, 230, 160, 0.9)')
     grad.addColorStop(1, 'rgba(255, 180, 60, 0)')
     ctx.fillStyle = grad
     ctx.beginPath()
-    ctx.arc(24, 0, 14, 0, Math.PI * 2)
+    ctx.arc(mx, 0, 14, 0, Math.PI * 2)
     ctx.fill()
   }
   ctx.restore()
