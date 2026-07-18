@@ -3,6 +3,10 @@
 
 export const ONOMATOPOEIA = ['POW!', 'BAM!', 'KAPOW!', 'WHACK!', 'BOOM!', 'ZOK!', 'THWACK!', 'BONK!', 'SMACK!']
 
+// The over-the-top callout for a combo finisher that sends someone flying —
+// absurd Bollywood-fight-scene energy.
+export const LAUNCH_LINES = ['SENT FLYING!!', 'OUTTA HERE!!', 'BLASTOFF!!', 'YEET!!', 'BYE BYE!!', 'MASALA KICK!!']
+
 const BURST_COLORS = ['#ffd23f', '#ee2b2b', '#1c3fa8']
 
 function seededRand(seed: number) {
@@ -21,12 +25,12 @@ function popEnvelope(t: number): number {
   return 1
 }
 
-export function drawBurst(ctx: CanvasRenderingContext2D, x: number, y: number, age: number, maxAge: number, seed: number) {
+export function drawBurst(ctx: CanvasRenderingContext2D, x: number, y: number, age: number, maxAge: number, seed: number, big = false) {
   const t = Math.min(1, age / maxAge)
   if (t >= 1) return
   const rand = seededRand(seed)
   const spikes = 10 + Math.floor(rand() * 4)
-  const baseR = 20 + rand() * 6
+  const baseR = (big ? 34 : 20) + rand() * (big ? 10 : 6)
   const scale = popEnvelope(t) * (1 - Math.max(0, (t - 0.6) / 0.4) * 0.15)
   const alpha = t < 0.75 ? 1 : 1 - (t - 0.75) / 0.25
   const rotation = (seed % 7) * 0.15
@@ -57,7 +61,16 @@ export function drawBurst(ctx: CanvasRenderingContext2D, x: number, y: number, a
   ctx.restore()
 }
 
-export function drawComicText(ctx: CanvasRenderingContext2D, text: string, x: number, y: number, age: number, maxAge: number, seed: number) {
+export function drawComicText(
+  ctx: CanvasRenderingContext2D,
+  text: string,
+  x: number,
+  y: number,
+  age: number,
+  maxAge: number,
+  seed: number,
+  fontSize = 26,
+) {
   const t = Math.min(1, age / maxAge)
   if (t >= 1) return
   const scale = popEnvelope(t)
@@ -70,11 +83,11 @@ export function drawComicText(ctx: CanvasRenderingContext2D, text: string, x: nu
   ctx.translate(x, y - rise)
   ctx.rotate(rotation)
   ctx.scale(scale, scale)
-  ctx.font = '700 26px "Bangers", "Kalam", sans-serif'
+  ctx.font = `700 ${fontSize}px "Bangers", "Kalam", sans-serif`
   ctx.textAlign = 'center'
   ctx.textBaseline = 'middle'
   ctx.lineJoin = 'round'
-  ctx.lineWidth = 5
+  ctx.lineWidth = fontSize * 0.19
   ctx.strokeStyle = '#0a0a0a'
   ctx.strokeText(text, 0, 0)
   ctx.fillStyle = '#fff6e5'
@@ -84,4 +97,8 @@ export function drawComicText(ctx: CanvasRenderingContext2D, text: string, x: nu
 
 export function pickOnomatopoeia(): string {
   return ONOMATOPOEIA[Math.floor(Math.random() * ONOMATOPOEIA.length)]
+}
+
+export function pickLaunchLine(): string {
+  return LAUNCH_LINES[Math.floor(Math.random() * LAUNCH_LINES.length)]
 }

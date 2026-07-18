@@ -1,4 +1,4 @@
-import { CLIPS, getImage, type AnimName } from './anim'
+import { getClips, getImage, type AnimName } from './anim'
 import type { FighterAnim, FighterState } from './engine'
 import { GROUND_Y, SPRITE_H, SPRITE_W } from './engine'
 
@@ -8,6 +8,8 @@ function clipFor(anim: FighterAnim): AnimName {
       return 'dash'
     case 'block':
       return 'idle'
+    case 'launched':
+      return 'hit'
     default:
       return anim as AnimName
   }
@@ -22,7 +24,7 @@ tintCanvas.height = SPRITE_H
 const tintCtx = tintCanvas.getContext('2d')!
 
 export function drawFighter(ctx: CanvasRenderingContext2D, f: FighterState, tint: 'p1' | 'p2') {
-  const clip = CLIPS[clipFor(f.anim)]
+  const clip = getClips(f.characterId)[clipFor(f.anim)]
   const src = clip.frames[Math.min(f.frame, clip.frames.length - 1)]
   if (!src) return
   const img = getImage(src)
@@ -33,7 +35,7 @@ export function drawFighter(ctx: CanvasRenderingContext2D, f: FighterState, tint
   ctx.save()
 
   // ground shadow, fades and shrinks while airborne
-  const shadowScale = Math.max(0.35, 1 - airLift / 160)
+  const shadowScale = Math.max(0.22, 1 - airLift / 220)
   ctx.globalAlpha = 0.32 * shadowScale
   ctx.fillStyle = '#000000'
   ctx.beginPath()
@@ -43,6 +45,7 @@ export function drawFighter(ctx: CanvasRenderingContext2D, f: FighterState, tint
 
   // feet anchored at f.y, sprite has ~14px of empty footroom baked into the crop
   ctx.translate(cx, f.y - 14)
+  if (f.anim === 'launched') ctx.rotate(f.spinAngle)
   if (f.facing === -1) ctx.scale(-1, 1)
 
   const flashOn = f.hitFlash > 0 && Math.floor(f.hitFlash / 55) % 2 === 0

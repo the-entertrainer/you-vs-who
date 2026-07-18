@@ -2,6 +2,7 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, shallowRef } from 'vue'
 import QRCode from 'qrcode'
 import { LOSE_QUOTES, WIN_QUOTES } from './data'
+import { DEFAULT_PLAYER_ID, DEFAULT_RIVAL_ID } from './characters'
 import {
   ARENA_H,
   ARENA_W,
@@ -15,7 +16,7 @@ import {
 import { drawFighter } from './sprite'
 import { drawOffice } from './arena'
 import { preloadSprites } from './anim'
-import { drawBurst, drawComicText, pickOnomatopoeia } from './comic'
+import { drawBurst, drawComicText, pickLaunchLine, pickOnomatopoeia } from './comic'
 import { hapticLight, hapticMedium, hapticStrong } from './haptics'
 import { sfxBlock, sfxLose, sfxMenuConfirm, sfxPunch, sfxSpecial, sfxUnlock, sfxWin } from './audio'
 
@@ -63,11 +64,12 @@ function fitCanvasToWrap() {
 }
 
 const controller = shallowRef<FightController | null>(null)
-const aiMemory = reactive<AIMemory>({ thinkCooldown: 300, wantChain: false })
-const BURST_LIFE = 380
-const TEXT_LIFE = 620
-const bursts = reactive<{ id: number; x: number; y: number; age: number; seed: number }[]>([])
-const comicTexts = reactive<{ id: number; x: number; y: number; age: number; seed: number; text: string }[]>([])
+const aiMemory = reactive<AIMemory>({ thinkCooldown: 300, wantChain: false, speedRatio: 0 })
+const BURST_LIFE = 340
+const TEXT_LIFE = 560
+const LAUNCH_TEXT_LIFE = 900
+const bursts = reactive<{ id: number; x: number; y: number; age: number; life: number; seed: number; big: boolean }[]>([])
+const comicTexts = reactive<{ id: number; x: number; y: number; age: number; life: number; seed: number; text: string; size: number }[]>([])
 let effectId = 0
 let rafId = 0
 let lastTs = 0
@@ -76,19 +78,21 @@ const opponentHealth = ref(100)
 const timeRemaining = ref(60)
 const comboStep = ref(0)
 let shake = 0
+let slowMoMs = 0
 
 // ---------------- Swipe / tap / hold gesture recognizer ----------------
-// Everything is one full-surface gesture: drag horizontally to walk (drag
-// further to break into a run), a fast horizontal flick throws a dash
+// Everything is one full-surface gesture: drag horizontally to walk
+// (proportional to how far you drag — a light drag is a careful step, a
+// big drag is a full sprint), a fast horizontal flick throws a dash
 // strike, a fast upward flick jumps (or air-strikes if already airborne),
 // holding still in place guards, and a quick tap throws a combo punch.
 const TAP_MAX_DIST = 16
-const TAP_MAX_DURATION = 220
-const DRAG_DEADZONE = 16
-const RUN_DRAG_DIST = 55
-const FLICK_MIN_DIST = 40
-const FLICK_MIN_SPEED = 0.55 // px/ms
-const HOLD_BLOCK_DELAY = 180
+const TAP_MAX_DURATION = 180
+const DRAG_DEADZONE = 10
+const MAX_DRAG_DIST = 85 // drag distance at which movement reaches full run speed
+const FLICK_MIN_DIST = 32
+const FLICK_MIN_SPEED = 0.45 // px/ms
+const HOLD_BLOCK_DELAY = 150
 
 const gesture = reactive({
   active: false,
@@ -178,13 +182,15 @@ function gestureCancel() {
 
 async function startFight() {
   sfxUnlock()
-  if (!spritesReady.value) await preloadSprites().then(() => (spritesReady.value = true))
-  controller.value = new FightController()
+  if (!spritesReady.value) await preloadSprites([DEFAULT_PLAYER_ID, DEFAULT_RIVAL_ID]).then(() => (spritesReady.value = true))
+  controller.value = new FightController(DEFAULT_PLAYER_ID, DEFAULT_RIVAL_ID)
   aiMemory.thinkCooldown = 300
   aiMemory.wantChain = false
+  aiMemory.speedRatio = 0
   bursts.length = 0
   comicTexts.length = 0
   shake = 0
+  slowMoMs = 0
   comboStep.value = 0
   screen.value = 'fight'
   lastTs = 0
@@ -217,21 +223,26 @@ function loop(ts: number) {
   const c = controller.value
   if (!c || screen.value !== 'fight') return
   if (!lastTs) lastTs = ts
-  let dt = (ts - lastTs) / 1000
+  let realDt = (ts - lastTs) / 1000
   lastTs = ts
-  dt = Math.min(dt, 0.048)
+  realDt = Math.min(realDt, 0.048)
+
+  // brief hit-stop / slow-mo on a "sent flying" launch, for comedic emphasis
+  const timeScale = slowMoMs > 0 ? 0.25 : 1
+  slowMoMs = Math.max(0, slowMoMs - realDt * 1000)
+  const dt = realDt * timeScale
 
   let dir: -1 | 0 | 1 = 0
-  let running = false
+  let speedRatio = 0
   if (gesture.active && gesture.dragging) {
     const dx = gesture.curX - gesture.startX
     const dy = gesture.curY - gesture.startY
     if (Math.abs(dx) > Math.abs(dy)) {
       dir = dx > 0 ? 1 : -1
-      running = Math.abs(dx) > RUN_DRAG_DIST
+      speedRatio = Math.min(1, Math.abs(dx) / MAX_DRAG_DIST)
     }
   }
-  c.move(c.a, dir, running)
+  c.move(c.a, dir, speedRatio)
 
   runAI(c, c.b, c.a, aiMemory, dt)
   c.update(dt)
@@ -244,10 +255,10 @@ function loop(ts: number) {
   opponentHealth.value = c.b.health
   timeRemaining.value = Math.ceil(Math.max(0, c.time))
 
-  for (const b of bursts) b.age += dt * 1000
-  while (bursts.length && bursts[0].age > BURST_LIFE) bursts.shift()
-  for (const t of comicTexts) t.age += dt * 1000
-  while (comicTexts.length && comicTexts[0].age > TEXT_LIFE) comicTexts.shift()
+  for (const b of bursts) b.age += realDt * 1000
+  while (bursts.length && bursts[0].age > bursts[0].life) bursts.shift()
+  for (const t of comicTexts) t.age += realDt * 1000
+  while (comicTexts.length && comicTexts[0].age > comicTexts[0].life) comicTexts.shift()
   shake *= 0.82
   if (shake < 0.3) shake = 0
 
@@ -268,12 +279,19 @@ function handleEvent(ev: FightEvent) {
     if (ev.type === 'finisher') sfxSpecial()
     else sfxPunch()
     hapticMedium()
-    bursts.push({ id: effectId++, x: ev.x, y: ev.y, age: 0, seed: effectId })
-    comicTexts.push({ id: effectId++, x: ev.x, y: ev.y - 8, age: 0, seed: effectId, text: pickOnomatopoeia() })
+    bursts.push({ id: effectId++, x: ev.x, y: ev.y, age: 0, life: BURST_LIFE, seed: effectId, big: false })
+    comicTexts.push({ id: effectId++, x: ev.x, y: ev.y - 8, age: 0, life: TEXT_LIFE, seed: effectId, text: pickOnomatopoeia(), size: 26 })
     shake = ev.type === 'finisher' ? 11 : 6
+  } else if (ev.type === 'launch') {
+    sfxSpecial()
+    hapticStrong()
+    bursts.push({ id: effectId++, x: ev.x, y: ev.y, age: 0, life: BURST_LIFE + 120, seed: effectId, big: true })
+    comicTexts.push({ id: effectId++, x: ev.x, y: ev.y - 8, age: 0, life: LAUNCH_TEXT_LIFE, seed: effectId, text: pickLaunchLine(), size: 34 })
+    shake = 22
+    slowMoMs = 260
   } else if (ev.type === 'ko') {
-    bursts.push({ id: effectId++, x: ev.x, y: ev.y, age: 0, seed: effectId })
-    comicTexts.push({ id: effectId++, x: ev.x, y: ev.y - 8, age: 0, seed: effectId, text: 'K.O.!!' })
+    bursts.push({ id: effectId++, x: ev.x, y: ev.y, age: 0, life: BURST_LIFE, seed: effectId, big: false })
+    comicTexts.push({ id: effectId++, x: ev.x, y: ev.y - 8, age: 0, life: 1200, seed: effectId, text: 'K.O.!!', size: 30 })
     shake = 16
   }
 }
@@ -296,8 +314,8 @@ function render(c: FightController) {
   const order: FighterState[] = c.a.x <= c.b.x ? [c.a, c.b] : [c.b, c.a]
   for (const f of order) drawFighter(ctx, f, f.side === 'a' ? 'p1' : 'p2')
 
-  for (const b of bursts) drawBurst(ctx, b.x, b.y, b.age, BURST_LIFE, b.seed)
-  for (const t of comicTexts) drawComicText(ctx, t.text, t.x, t.y, t.age, TEXT_LIFE, t.seed)
+  for (const b of bursts) drawBurst(ctx, b.x, b.y, b.age, b.life, b.seed, b.big)
+  for (const t of comicTexts) drawComicText(ctx, t.text, t.x, t.y, t.age, t.life, t.seed, t.size)
 
   ctx.restore()
 }
@@ -370,7 +388,7 @@ const resultQuote = computed(() => {
 onMounted(async () => {
   isMobile.value = detectMobile()
   window.addEventListener('resize', onResize)
-  preloadSprites().then(() => (spritesReady.value = true))
+  preloadSprites([DEFAULT_PLAYER_ID, DEFAULT_RIVAL_ID]).then(() => (spritesReady.value = true))
   if (!isMobile.value) {
     screen.value = 'desktop-qr'
     try {

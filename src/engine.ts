@@ -1,4 +1,4 @@
-import { CLIPS, type AnimName } from './anim'
+import { CLIPS, DEFAULT_CHARACTER, type AnimName } from './anim'
 
 export const ARENA_W = 480
 export const ARENA_H = 270
@@ -7,10 +7,18 @@ export const SPRITE_W = 132
 export const SPRITE_H = 137
 export const MAX_HEALTH = 100
 
-export const WALK_SPEED = 78
-export const RUN_SPEED = 158
-export const JUMP_VELOCITY = -330
-export const GRAVITY = 900
+export const WALK_SPEED = 112
+export const RUN_SPEED = 236
+export const JUMP_VELOCITY = -380
+export const GRAVITY = 1050
+
+// "Sent flying" launch physics — the over-the-top payoff for landing a
+// full 3-hit combo finisher. Big horizontal yeet, floaty hang-time arc,
+// fast spin, comedic Bollywood-fight-scene energy.
+export const LAUNCH_VX = 520
+export const LAUNCH_VY = -320
+export const LAUNCH_GRAVITY = 620
+export const LAUNCH_SPIN = 18 // radians/sec
 
 export type FighterAnim =
   | 'idle'
@@ -25,6 +33,7 @@ export type FighterAnim =
   | 'hit'
   | 'block'
   | 'death'
+  | 'launched'
 
 interface MoveSpec {
   clip: AnimName
@@ -33,16 +42,17 @@ interface MoveSpec {
   stun: number // ms of hitstun applied to victim
   pushback: number
   range: number
+  launches?: boolean // sends the defender flying instead of normal hitstun
 }
 
-const JAB: MoveSpec = { clip: 'comboJab', activeFrame: 3, damage: 5, stun: 220, pushback: 10, range: 76 }
-const CROSS: MoveSpec = { clip: 'comboCross', activeFrame: 4, damage: 7, stun: 260, pushback: 14, range: 78 }
-const FINISHER: MoveSpec = { clip: 'comboFinisher', activeFrame: 3, damage: 15, stun: 520, pushback: 46, range: 82 }
-const AIR_ATTACK: MoveSpec = { clip: 'airAttack', activeFrame: 1, damage: 9, stun: 340, pushback: 24, range: 74 }
-const DASH_ATTACK: MoveSpec = { clip: 'dash', activeFrame: 3, damage: 10, stun: 320, pushback: 30, range: 84 }
+const JAB: MoveSpec = { clip: 'comboJab', activeFrame: 3, damage: 6, stun: 190, pushback: 10, range: 76 }
+const CROSS: MoveSpec = { clip: 'comboCross', activeFrame: 4, damage: 8, stun: 220, pushback: 14, range: 78 }
+const FINISHER: MoveSpec = { clip: 'comboFinisher', activeFrame: 3, damage: 17, stun: 480, pushback: 46, range: 82, launches: true }
+const AIR_ATTACK: MoveSpec = { clip: 'airAttack', activeFrame: 1, damage: 10, stun: 300, pushback: 24, range: 74 }
+const DASH_ATTACK: MoveSpec = { clip: 'dash', activeFrame: 3, damage: 11, stun: 280, pushback: 30, range: 84 }
 
 export interface FightEvent {
-  type: 'hit' | 'block' | 'ko' | 'finisher'
+  type: 'hit' | 'block' | 'ko' | 'finisher' | 'launch'
   x: number
   y: number
   who: 'a' | 'b'
@@ -51,6 +61,7 @@ export interface FightEvent {
 
 export interface FighterState {
   side: 'a' | 'b'
+  characterId: string
   x: number
   y: number
   vy: number
@@ -70,13 +81,17 @@ export interface FighterState {
   winner: boolean
   dead: boolean
   moveDir: -1 | 0 | 1
-  wantRun: boolean
+  speedRatio: number // 0 (walk) .. 1 (full run), analog — proportional to drag distance
   wantBlock: boolean
+  spinAngle: number
+  launchVX: number
+  launchVY: number
 }
 
-function makeFighter(side: 'a' | 'b', x: number, facing: 1 | -1): FighterState {
+function makeFighter(side: 'a' | 'b', x: number, facing: 1 | -1, characterId: string): FighterState {
   return {
     side,
+    characterId,
     x,
     y: GROUND_Y,
     vy: 0,
@@ -96,8 +111,11 @@ function makeFighter(side: 'a' | 'b', x: number, facing: 1 | -1): FighterState {
     winner: false,
     dead: false,
     moveDir: 0,
-    wantRun: false,
+    speedRatio: 0,
     wantBlock: false,
+    spinAngle: 0,
+    launchVX: 0,
+    launchVY: 0,
   }
 }
 
@@ -107,6 +125,8 @@ function clipFor(anim: FighterAnim): AnimName {
       return 'dash'
     case 'block':
       return 'idle'
+    case 'launched':
+      return 'hit'
     default:
       return anim as AnimName
   }
@@ -119,9 +139,9 @@ export class FightController {
   over = false
   events: FightEvent[] = []
 
-  constructor() {
-    this.a = makeFighter('a', ARENA_W * 0.28, 1)
-    this.b = makeFighter('b', ARENA_W * 0.72, -1)
+  constructor(playerCharacterId: string = DEFAULT_CHARACTER, rivalCharacterId: string = DEFAULT_CHARACTER) {
+    this.a = makeFighter('a', ARENA_W * 0.28, 1, playerCharacterId)
+    this.b = makeFighter('b', ARENA_W * 0.72, -1, rivalCharacterId)
   }
 
   private isBusy(f: FighterState): boolean {
@@ -132,12 +152,13 @@ export class FightController {
       f.anim === 'airAttack' ||
       f.anim === 'dashAttack' ||
       f.anim === 'hit' ||
-      f.anim === 'death'
+      f.anim === 'death' ||
+      f.anim === 'launched'
     )
   }
 
   canAct(f: FighterState): boolean {
-    return !f.dead && !this.over && f.anim !== 'death' && f.anim !== 'hit'
+    return !f.dead && !this.over && f.anim !== 'death' && f.anim !== 'hit' && f.anim !== 'launched'
   }
 
   private startMove(f: FighterState, anim: FighterAnim) {
@@ -171,7 +192,7 @@ export class FightController {
   swipeStrike(f: FighterState, dir: -1 | 1) {
     if (!this.canAct(f) || !f.grounded || this.isBusy(f)) return
     f.facing = dir
-    f.x += dir * 10
+    f.x += dir * 14
     f.x = Math.max(24, Math.min(ARENA_W - 24, f.x))
     this.startMove(f, 'dashAttack')
     f.comboStep = 0
@@ -197,9 +218,10 @@ export class FightController {
     f.frameTimer = 0
   }
 
-  move(f: FighterState, dir: -1 | 0 | 1, running: boolean) {
+  /** speedRatio: 0 = walk pace, 1 = full run — analog so drag distance maps smoothly to speed. */
+  move(f: FighterState, dir: -1 | 0 | 1, speedRatio: number) {
     f.moveDir = dir
-    f.wantRun = running
+    f.speedRatio = Math.max(0, Math.min(1, speedRatio))
   }
 
   private moveSpecFor(anim: FighterAnim): MoveSpec | null {
@@ -224,25 +246,41 @@ export class FightController {
       this.events.push({ type: 'block', x: defender.x, y: GROUND_Y - 90, who: defender.side })
       return
     }
+
     defender.health = Math.max(0, defender.health - move.damage)
-    defender.x += dir * move.pushback
-    defender.x = Math.max(24, Math.min(ARENA_W - 24, defender.x))
-    defender.anim = 'hit'
-    defender.frame = 0
-    defender.frameTimer = 0
-    defender.hitstunTimer = move.stun
-    defender.hitFlash = 160
     defender.blocking = false
     defender.comboStep = 0
-    const kind = move.damage >= 12 ? 'finisher' : 'hit'
-    this.events.push({ type: kind, x: defender.x, y: GROUND_Y - 100, who: defender.side, damage: move.damage })
+    defender.hitFlash = 160
+
+    if (move.launches) {
+      defender.anim = 'launched'
+      defender.frame = 0
+      defender.frameTimer = 0
+      defender.grounded = false
+      defender.spinAngle = 0
+      defender.launchVX = dir * LAUNCH_VX
+      defender.launchVY = LAUNCH_VY
+      this.events.push({ type: 'launch', x: defender.x, y: GROUND_Y - 100, who: defender.side, damage: move.damage })
+    } else {
+      defender.x += dir * move.pushback
+      defender.x = Math.max(24, Math.min(ARENA_W - 24, defender.x))
+      defender.anim = 'hit'
+      defender.frame = 0
+      defender.frameTimer = 0
+      defender.hitstunTimer = move.stun
+      const kind = move.damage >= 12 ? 'finisher' : 'hit'
+      this.events.push({ type: kind, x: defender.x, y: GROUND_Y - 100, who: defender.side, damage: move.damage })
+    }
 
     if (defender.health <= 0 && !defender.dead) {
       defender.dead = true
-      defender.anim = 'death'
-      defender.frame = 0
-      defender.frameTimer = 0
-      this.events.push({ type: 'ko', x: defender.x, y: GROUND_Y - 100, who: defender.side })
+      if (!move.launches) {
+        defender.anim = 'death'
+        defender.frame = 0
+        defender.frameTimer = 0
+        this.events.push({ type: 'ko', x: defender.x, y: GROUND_Y - 100, who: defender.side })
+      }
+      // if launched, the KO event fires on landing instead — see updateFighter
     }
   }
 
@@ -251,8 +289,35 @@ export class FightController {
 
     if (f.hitFlash > 0) f.hitFlash = Math.max(0, f.hitFlash - dtMs)
 
-    if (f.dead) {
+    if (f.dead && f.anim !== 'launched') {
       this.stepAnim(f, dt)
+      return
+    }
+
+    if (f.anim === 'launched') {
+      f.x += f.launchVX * dt
+      f.launchVX *= Math.pow(0.98, dt * 60)
+      f.launchVY += LAUNCH_GRAVITY * dt
+      f.y += f.launchVY * dt
+      f.spinAngle += LAUNCH_SPIN * dt
+      f.x = Math.max(18, Math.min(ARENA_W - 18, f.x))
+      this.stepAnim(f, dt)
+      if (f.y >= GROUND_Y) {
+        f.y = GROUND_Y
+        f.grounded = true
+        f.spinAngle = 0
+        if (f.dead) {
+          f.anim = 'death'
+          f.frame = 0
+          f.frameTimer = 0
+          this.events.push({ type: 'ko', x: f.x, y: GROUND_Y - 100, who: f.side })
+        } else {
+          f.anim = 'hit'
+          f.frame = 0
+          f.frameTimer = 0
+          f.hitstunTimer = 420
+        }
+      }
       return
     }
 
@@ -319,10 +384,10 @@ export class FightController {
 
     if (f.moveDir !== 0) {
       f.facing = f.moveDir as 1 | -1
-      const speed = f.wantRun ? RUN_SPEED : WALK_SPEED
+      const speed = WALK_SPEED + (RUN_SPEED - WALK_SPEED) * f.speedRatio
       f.x += f.moveDir * speed * dt
       f.x = Math.max(24, Math.min(ARENA_W - 24, f.x))
-      f.anim = f.wantRun ? 'run' : 'walk'
+      f.anim = f.speedRatio > 0.5 ? 'run' : 'walk'
     } else {
       f.anim = 'idle'
     }
@@ -383,9 +448,25 @@ export class FightController {
 }
 
 // ---------------- AI ----------------
+// Move categories available to both the player and the AI, and how they
+// read on the receiving end:
+//   - Jab / Cross        quick pokes, short hitstun, small pushback — pure combo filler
+//   - Finisher            the 3rd combo hit — big damage AND launches the
+//                          defender into a spinning, screen-crossing "sent
+//                          flying" ragdoll (the absurd payoff move)
+//   - Dash Strike          a lunging punch that covers ground, used to close
+//                          distance aggressively or punish whiffs
+//   - Air Strike            aerial attack, used to contest jump-ins or start
+//                          offense from above
+// The AI mixes all four with tuned probabilities below so it feels like an
+// actual opponent rather than a heavy bag: it closes distance with dash
+// strikes, contests neutral with jumps into air strikes, blocks reactively
+// when the player is mid-combo, and commits hard to finishing chains once
+// it starts one.
 export interface AIMemory {
   thinkCooldown: number
   wantChain: boolean
+  speedRatio: number
 }
 
 export function runAI(controller: FightController, ai: FighterState, target: FighterState, mem: AIMemory, dt: number) {
@@ -399,30 +480,34 @@ export function runAI(controller: FightController, ai: FighterState, target: Fig
   const strikeRange = 58 // comfortably inside every move's activation range
 
   if (mem.thinkCooldown <= 0) {
-    mem.thinkCooldown = 160 + Math.random() * 220
+    mem.thinkCooldown = 90 + Math.random() * 130
 
     const targetBusy = target.anim.startsWith('combo') || target.anim === 'dashAttack' || target.anim === 'airAttack'
 
     if (dist > strikeRange) {
       ai.moveDir = ai.x < target.x ? 1 : -1
-      ai.wantRun = dist > 160
+      mem.speedRatio = dist > 140 ? 1 : 0.4
       ai.wantBlock = false
+      if (ai.grounded && dist < 210 && dist > strikeRange + 12 && Math.random() < 0.3) {
+        controller.swipeStrike(ai, ai.x < target.x ? 1 : -1)
+      }
     } else if (dist < strikeRange - 30) {
       ai.moveDir = ai.x < target.x ? -1 : 1
-      ai.wantRun = false
+      mem.speedRatio = 0
       ai.wantBlock = false
     } else {
       ai.moveDir = 0
-      if (targetBusy && Math.random() < 0.35) {
+      if (targetBusy && Math.random() < 0.4) {
         ai.wantBlock = true
       } else {
         ai.wantBlock = false
         const roll = Math.random()
-        if (roll < 0.55) {
+        if (roll < 0.65) {
           controller.attack(ai)
-          mem.wantChain = Math.random() < 0.7
-        } else if (roll < 0.7 && ai.grounded) {
+          mem.wantChain = Math.random() < 0.85
+        } else if (roll < 0.82 && ai.grounded) {
           controller.jump(ai)
+          if (Math.random() < 0.6) controller.attack(ai) // follow up with an air strike
         }
       }
     }
@@ -432,6 +517,6 @@ export function runAI(controller: FightController, ai: FighterState, target: Fig
     controller.attack(ai)
   }
 
-  controller.move(ai, ai.moveDir, ai.wantRun)
+  controller.move(ai, ai.moveDir, mem.speedRatio)
   controller.setBlocking(ai, ai.wantBlock)
 }

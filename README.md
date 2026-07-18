@@ -24,17 +24,27 @@ you'll see a QR code pointing back at the same URL.
 
 ## Controls
 
-Everything is a gesture on the fight screen — no on-screen buttons:
+Everything is a gesture on the fight screen — no on-screen buttons. Movement
+is analog: a light drag is a careful step, dragging further ramps smoothly up
+to a full sprint (no walk/run threshold jump to fight against).
 
-- **Drag left/right** — walk; drag further to break into a run
+- **Drag left/right** — walk/run, proportional to how far you drag
 - **Fast horizontal flick** — dash strike in that direction
 - **Fast upward flick** — jump; flick again mid-air for an air strike
 - **Quick tap** — throws a jab; tap again inside the follow-up window to
-  chain into a cross, then a haymaker finisher (3-hit combo string)
+  chain into a cross, then a haymaker finisher (3-hit combo string) that
+  **sends the opponent flying** — a spinning, screen-crossing, Bollywood
+  fight scene-style knockback with hit-stop and a "SENT FLYING!!" callout
 - **Press and hold in place** — guard, reduces damage while held
 
 ## Features
 
+- Fast, punchy pacing: quick movement, snappy animation, and an AI rival
+  that closes distance with dash strikes, contests the air with jump-ins,
+  blocks reactively, and commits hard to finishing combos
+- A signature "sent flying" finisher: landing the full 3-hit combo launches
+  the opponent into a spinning aerial ragdoll with a brief slow-mo hit-stop,
+  a bigger screen shake, and an absurd comic callout — the payoff move
 - Bold comic-book presentation: Bangers/Kalam lettering, hand-inked
   "boiling line" outlines that stay alive frame-to-frame, halftone dot
   shading, jagged starburst hit callouts with rotated onomatopoeia
@@ -49,8 +59,10 @@ Everything is a gesture on the fight screen — no on-screen buttons:
 - A hand-drawn, hand-inked office arena — cubicle partitions, windows,
   desks with monitors, a water cooler, a potted plant — rendered on
   `<canvas>`
-- A lightweight AI rival using the identical moveset and animation set,
-  tinted red to your blue
+- A character roster registry (`src/characters.ts`) and per-character
+  sprite loading (`src/anim.ts`'s `getClips(characterId)`) ready to grow
+  past the one fighter — drop a new sprite pack in `src/assets/<id>/`
+  following the same frame-naming convention and register it
 - Web Audio API square-wave SFX and `navigator.vibrate` haptics on every
   hit, block, and finisher
 - Desktop shows a handheld-bezel QR screen instead of the game
@@ -68,10 +80,13 @@ Everything is a gesture on the fight screen — no on-screen buttons:
   swipe/tap/hold gesture recognizer, HUD, and the requestAnimationFrame
   game loop
 - `src/engine.ts` — fight simulation: fighter state, combo/move
-  resolution, hit/block/KO logic, and the AI opponent
-- `src/anim.ts` — sprite frame manifest, clip definitions, and preloading
+  resolution, launch/ragdoll physics, hit/block/KO logic, and the AI
+  opponent
+- `src/characters.ts` — character roster registry (id → sprite folder)
+- `src/anim.ts` — per-character sprite frame manifest, clip definitions,
+  and preloading
 - `src/sprite.ts` — canvas sprite renderer (frame drawing, per-side tint,
-  hit flash, ground shadow)
+  hit flash, ground shadow, launch spin rotation)
 - `src/arena.ts` — hand-drawn, hand-inked office backdrop
 - `src/comic.ts` — starburst + onomatopoeia hit-effect renderer
 - `src/assets/fighter/` — cropped sprite frames (CC0, see credit below)

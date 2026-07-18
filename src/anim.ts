@@ -1,13 +1,26 @@
 // Sprite frames sourced from "Stick Figure Character Sprites 2D" (CC0, Raphael Gonçalves).
 // Cropped to a shared 220x228 bounding box so animation motion stays anchored.
+//
+// Multi-character ready: every folder under src/assets/<characterId>/ is picked
+// up automatically. To add a new fighter, drop its frames in a new folder
+// following the same naming convention (Idle_/walk_/run_/dash_/jump_/
+// air_attack_/hit_/death_/combo_) and register it in src/characters.ts —
+// no changes needed here.
 
-const frameModules = import.meta.glob('./assets/fighter/*.png', { eager: true, import: 'default' }) as Record<string, string>
+export const DEFAULT_CHARACTER = 'fighter'
 
-function framesFor(prefix: string): string[] {
-  const entries = Object.entries(frameModules)
-    .filter(([path]) => path.includes(`/${prefix}`))
+const frameModules = import.meta.glob('./assets/*/*.png', { eager: true, import: 'default' }) as Record<string, string>
+
+function framesFor(characterId: string, prefix: string): string[] {
+  const marker = `/assets/${characterId}/`
+  return Object.entries(frameModules)
+    .filter(([path]) => {
+      const idx = path.indexOf(marker)
+      if (idx === -1) return false
+      return path.slice(idx + marker.length).startsWith(prefix)
+    })
     .sort(([a], [b]) => a.localeCompare(b, undefined, { numeric: true }))
-  return entries.map(([, url]) => url)
+    .map(([, url]) => url)
 }
 
 export type AnimName =
@@ -30,31 +43,47 @@ interface ClipDef {
   loop: boolean
 }
 
-const allCombo = framesFor('combo_')
-// 19-frame combo (0064-0082) split into a 3-hit string: jab / cross / finisher
-const comboJab = allCombo.slice(0, 6)
-const comboCross = allCombo.slice(6, 13)
-const comboFinisher = allCombo.slice(13, 19)
+const clipsCache = new Map<string, Record<AnimName, ClipDef>>()
 
-export const CLIPS: Record<AnimName, ClipDef> = {
-  idle: { frames: framesFor('Idle_'), fps: 6, loop: true },
-  walk: { frames: framesFor('walk_'), fps: 12, loop: true },
-  run: { frames: framesFor('run_'), fps: 14, loop: true },
-  dash: { frames: framesFor('dash_'), fps: 16, loop: false },
-  jump: { frames: framesFor('jump_'), fps: 12, loop: false },
-  airAttack: { frames: framesFor('air_attack_'), fps: 10, loop: false },
-  hit: { frames: framesFor('hit_'), fps: 12, loop: false },
-  death: { frames: framesFor('death_'), fps: 10, loop: false },
-  wallslide: { frames: framesFor('wallslide'), fps: 8, loop: true },
-  comboJab: { frames: comboJab, fps: 18, loop: false },
-  comboCross: { frames: comboCross, fps: 18, loop: false },
-  comboFinisher: { frames: comboFinisher, fps: 14, loop: false },
+/** Builds (and caches) the animation clip table for a given character folder. */
+export function getClips(characterId: string): Record<AnimName, ClipDef> {
+  const cached = clipsCache.get(characterId)
+  if (cached) return cached
+
+  const allCombo = framesFor(characterId, 'combo_')
+  // 19-frame combo (0064-0082) split into a 3-hit string: jab / cross / finisher
+  const comboJab = allCombo.slice(0, 6)
+  const comboCross = allCombo.slice(6, 13)
+  const comboFinisher = allCombo.slice(13, 19)
+
+  const clips: Record<AnimName, ClipDef> = {
+    idle: { frames: framesFor(characterId, 'Idle_'), fps: 8, loop: true },
+    walk: { frames: framesFor(characterId, 'walk_'), fps: 16, loop: true },
+    run: { frames: framesFor(characterId, 'run_'), fps: 20, loop: true },
+    dash: { frames: framesFor(characterId, 'dash_'), fps: 22, loop: false },
+    jump: { frames: framesFor(characterId, 'jump_'), fps: 15, loop: false },
+    airAttack: { frames: framesFor(characterId, 'air_attack_'), fps: 14, loop: false },
+    hit: { frames: framesFor(characterId, 'hit_'), fps: 16, loop: false },
+    death: { frames: framesFor(characterId, 'death_'), fps: 12, loop: false },
+    wallslide: { frames: framesFor(characterId, 'wallslide'), fps: 8, loop: true },
+    comboJab: { frames: comboJab, fps: 26, loop: false },
+    comboCross: { frames: comboCross, fps: 26, loop: false },
+    comboFinisher: { frames: comboFinisher, fps: 20, loop: false },
+  }
+  clipsCache.set(characterId, clips)
+  return clips
 }
 
+// Kept as the reference clip table for engine.ts's frame-count/fps timing math,
+// which is shared across characters for consistent gameplay balance.
+export const CLIPS = getClips(DEFAULT_CHARACTER)
+
 const preloaded: HTMLImageElement[] = []
-export function preloadSprites(): Promise<void> {
+export function preloadSprites(characterIds: string[] = [DEFAULT_CHARACTER]): Promise<void> {
   const urls = new Set<string>()
-  Object.values(CLIPS).forEach((c) => c.frames.forEach((f) => urls.add(f)))
+  characterIds.forEach((id) => {
+    Object.values(getClips(id)).forEach((c) => c.frames.forEach((f) => urls.add(f)))
+  })
   const imgs = Array.from(urls).map((src) => {
     const img = new Image()
     img.src = src
