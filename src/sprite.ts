@@ -23,7 +23,13 @@ tintCanvas.width = SPRITE_W
 tintCanvas.height = SPRITE_H
 const tintCtx = tintCanvas.getContext('2d')!
 
-export function drawFighter(ctx: CanvasRenderingContext2D, f: FighterState) {
+// Measured from the source frames: standing/walking poses put the feet at
+// source-image y≈193 out of a 228px-tall crop, i.e. 35px of empty footroom
+// below the feet. Scaled to SPRITE_H this is the offset that plants the
+// feet exactly on the ground line instead of floating above it.
+const FOOT_MARGIN = (35 / 228) * SPRITE_H
+
+export function drawFighter(ctx: CanvasRenderingContext2D, f: FighterState, isPlayer = false) {
   const clip = getClips(f.characterId)[clipFor(f.anim)]
   const src = clip.frames[Math.min(f.frame, clip.frames.length - 1)]
   if (!src) return
@@ -43,8 +49,19 @@ export function drawFighter(ctx: CanvasRenderingContext2D, f: FighterState) {
   ctx.fill()
   ctx.globalAlpha = 1
 
-  // feet anchored at f.y, sprite has ~14px of empty footroom baked into the crop
-  ctx.translate(cx, f.y - 14)
+  // player-only ground ring so they read as "you" at a glance in a crowd
+  if (isPlayer) {
+    ctx.globalAlpha = 0.55 * shadowScale
+    ctx.strokeStyle = '#5cc9ff'
+    ctx.lineWidth = 2.5
+    ctx.beginPath()
+    ctx.ellipse(cx, GROUND_Y + 6, SPRITE_W * 0.36 * shadowScale, 8 * shadowScale, 0, 0, Math.PI * 2)
+    ctx.stroke()
+    ctx.globalAlpha = 1
+  }
+
+  // feet anchored at f.y (ground line when grounded)
+  ctx.translate(cx, f.y + FOOT_MARGIN)
   if (f.anim === 'launched') ctx.rotate(f.spinAngle)
   if (f.facing === -1) ctx.scale(-1, 1)
 
@@ -59,6 +76,12 @@ export function drawFighter(ctx: CanvasRenderingContext2D, f: FighterState) {
   tintCtx.fillRect(0, 0, SPRITE_W, SPRITE_H)
   tintCtx.globalCompositeOperation = 'source-over'
 
+  // soft dark contact shadow around the whole silhouette — keeps every
+  // fighter readable against busy photo backdrops instead of blending in
+  ctx.shadowColor = isPlayer ? 'rgba(30, 60, 120, 0.85)' : 'rgba(0, 0, 0, 0.65)'
+  ctx.shadowBlur = isPlayer ? 10 : 5
   ctx.drawImage(tintCanvas, -SPRITE_W / 2, -SPRITE_H)
+  ctx.shadowBlur = 0
+
   ctx.restore()
 }

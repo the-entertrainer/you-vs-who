@@ -3,25 +3,18 @@ import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, shallowR
 import QRCode from 'qrcode'
 import { LOSE_QUOTES } from './data'
 import { DEFAULT_PLAYER_ID, DEFAULT_RIVAL_ID } from './characters'
-import { ENEMY_ROSTER, profileForWave } from './enemies'
-import { backdropForWave, getBackdropImage, preloadBackdrops, type Backdrop } from './backdrops'
-import {
-  ARENA_H,
-  ARENA_W,
-  FightController,
-  runAI,
-  type AIMemory,
-  type EnemyProfile,
-  type FightEvent,
-  type FighterState,
-} from './engine'
+import { ENEMY_ROSTER } from './enemies'
+import { BACKDROPS, getBackdropImage, preloadBackdrops, type Backdrop } from './backdrops'
+import { ARENA_H, ARENA_W, FightController, runEnemyAI, type FightEvent, type FighterState } from './engine'
 import { drawFighter } from './sprite'
 import { preloadSprites } from './anim'
 import { drawBurst, drawComicText, pickLaunchLine, pickOnomatopoeia } from './comic'
 import { hapticLight, hapticMedium, hapticStrong } from './haptics'
-import { sfxBlock, sfxLose, sfxMenuConfirm, sfxPunch, sfxSpecial, sfxUnlock } from './audio'
+import { sfxBlock, sfxLose, sfxMenuConfirm, sfxPunch, sfxSpecial, sfxUnlock, sfxWin } from './audio'
 
 type Screen = 'desktop-qr' | 'title' | 'fight' | 'results'
+
+const SWARM_SIZE = 14
 
 const screen = ref<Screen>('title')
 const isMobile = ref(true)
@@ -65,12 +58,9 @@ function fitCanvasToWrap() {
 }
 
 const controller = shallowRef<FightController | null>(null)
-const aiMemory = reactive<AIMemory>({ thinkCooldown: 300, wantChain: false, speedRatio: 0 })
 const BURST_LIFE = 340
 const TEXT_LIFE = 560
 const LAUNCH_TEXT_LIFE = 900
-const WAVE_BANNER_LIFE = 1500
-const NEXT_WAVE_DELAY = 1100 // ms pause after a KO before the next wave spawns in
 const bursts = reactive<{ id: number; x: number; y: number; age: number; life: number; seed: number; big: boolean }[]>([])
 const comicTexts = reactive<{ id: number; x: number; y: number; age: number; life: number; seed: number; text: string; size: number }[]>([])
 let effectId = 0
@@ -78,19 +68,12 @@ let rafId = 0
 let lastTs = 0
 const playerHealth = ref(100)
 const playerMaxHealth = ref(100)
-const opponentHealth = ref(100)
-const opponentMaxHealth = ref(100)
+const enemiesRemaining = ref(SWARM_SIZE)
 const comboStep = ref(0)
+const matchBackdrop = shallowRef<Backdrop>(BACKDROPS[0])
+const defeatedBy = ref('')
 let shake = 0
 let slowMoMs = 0
-
-// ---------------- Wave survival state ----------------
-const wave = ref(1)
-const wavesSurvived = ref(0)
-const currentProfile = shallowRef<EnemyProfile>(ENEMY_ROSTER[0])
-const currentBackdrop = shallowRef<Backdrop>(backdropForWave(1))
-let nextWaveTimer = 0
-let pendingNextWave = false
 
 // ---------------- Swipe / tap / hold gesture recognizer ----------------
 // Everything is one full-surface gesture: drag horizontally to walk
@@ -192,48 +175,26 @@ function gestureCancel() {
   window.clearTimeout(holdTimer)
 }
 
-function applyWave(n: number) {
-  const c = controller.value
-  if (!c) return
-  wave.value = n
-  const profile = profileForWave(n)
-  currentProfile.value = profile
-  currentBackdrop.value = backdropForWave(n)
-  c.startNextWave(profile)
-  aiMemory.thinkCooldown = profile.thinkMin
-  aiMemory.wantChain = false
-  aiMemory.speedRatio = 0
-  comicTexts.push({
-    id: effectId++,
-    x: ARENA_W / 2,
-    y: 70,
-    age: 0,
-    life: WAVE_BANNER_LIFE,
-    seed: effectId,
-    text: `WAVE ${n}: ${profile.name}`,
-    size: 20,
-  })
-}
-
 async function startFight() {
   sfxUnlock()
   if (!spritesReady.value) {
     await Promise.all([preloadSprites([DEFAULT_PLAYER_ID, DEFAULT_RIVAL_ID]), preloadBackdrops()])
     spritesReady.value = true
   }
-  controller.value = new FightController(DEFAULT_PLAYER_ID, DEFAULT_RIVAL_ID, true)
-  wavesSurvived.value = 0
+  const c = new FightController(DEFAULT_PLAYER_ID)
+  c.spawnSwarm(SWARM_SIZE, ENEMY_ROSTER, DEFAULT_RIVAL_ID)
+  controller.value = c
+  matchBackdrop.value = BACKDROPS[Math.floor(Math.random() * BACKDROPS.length)]
+  enemiesRemaining.value = SWARM_SIZE
+  defeatedBy.value = ''
   bursts.length = 0
   comicTexts.length = 0
   shake = 0
   slowMoMs = 0
-  pendingNextWave = false
-  nextWaveTimer = 0
   comboStep.value = 0
   screen.value = 'fight'
   lastTs = 0
   cancelAnimationFrame(rafId)
-  applyWave(1)
   await nextTick()
   if (canvasWrapRef.value) {
     resizeObserver?.disconnect()
@@ -248,8 +209,13 @@ function endFight() {
   cancelAnimationFrame(rafId)
   const c = controller.value
   if (!c) return
-  sfxLose()
-  hapticMedium()
+  if (c.victory) {
+    sfxWin()
+    hapticStrong()
+  } else {
+    sfxLose()
+    hapticMedium()
+  }
   screen.value = 'results'
 }
 
@@ -276,28 +242,18 @@ function loop(ts: number) {
       speedRatio = Math.min(1, Math.abs(dx) / MAX_DRAG_DIST)
     }
   }
-  c.move(c.a, dir, speedRatio)
+  c.move(c.player, dir, speedRatio)
 
-  runAI(c, c.b, c.a, aiMemory, dt, currentProfile.value)
+  for (const e of c.enemies) runEnemyAI(c, e, dt)
   c.update(dt)
-  comboStep.value = c.a.comboStep
+  comboStep.value = c.player.comboStep
 
   const evs = c.events.splice(0)
   for (const ev of evs) handleEvent(ev)
 
-  playerHealth.value = c.a.health
-  playerMaxHealth.value = c.a.maxHealth
-  opponentHealth.value = c.b.health
-  opponentMaxHealth.value = c.b.maxHealth
-
-  if (pendingNextWave) {
-    nextWaveTimer -= realDt * 1000
-    if (nextWaveTimer <= 0) {
-      pendingNextWave = false
-      wavesSurvived.value = wave.value
-      applyWave(wave.value + 1)
-    }
-  }
+  playerHealth.value = c.player.health
+  playerMaxHealth.value = c.player.maxHealth
+  enemiesRemaining.value = c.enemies.filter((e) => !e.dead).length
 
   for (const b of bursts) b.age += realDt * 1000
   while (bursts.length && bursts[0].age > bursts[0].life) bursts.shift()
@@ -337,10 +293,7 @@ function handleEvent(ev: FightEvent) {
     bursts.push({ id: effectId++, x: ev.x, y: ev.y, age: 0, life: BURST_LIFE, seed: effectId, big: false })
     comicTexts.push({ id: effectId++, x: ev.x, y: ev.y - 8, age: 0, life: 1200, seed: effectId, text: 'K.O.!!', size: 30 })
     shake = 16
-    if (ev.who === 'b') {
-      pendingNextWave = true
-      nextWaveTimer = NEXT_WAVE_DELAY
-    }
+    if (ev.who === 'player' && ev.attackerName) defeatedBy.value = ev.attackerName
   }
 }
 
@@ -357,16 +310,20 @@ function render(c: FightController) {
     ctx.translate((Math.random() - 0.5) * shake, (Math.random() - 0.5) * shake)
   }
 
-  const bg = getBackdropImage(currentBackdrop.value.src)
+  const bg = getBackdropImage(matchBackdrop.value.src)
   if (bg.complete && bg.naturalWidth > 0) {
     ctx.drawImage(bg, 0, 0, ARENA_W, ARENA_H)
   } else {
     ctx.fillStyle = '#1d1c13'
     ctx.fillRect(0, 0, ARENA_W, ARENA_H)
   }
+  // darken slightly so the fighters (which get their own contact-shadow pop) read clearly against a busy photo
+  ctx.fillStyle = 'rgba(10, 8, 6, 0.28)'
+  ctx.fillRect(0, 0, ARENA_W, ARENA_H)
 
-  const order: FighterState[] = c.a.x <= c.b.x ? [c.a, c.b] : [c.b, c.a]
-  for (const f of order) drawFighter(ctx, f)
+  const all: FighterState[] = [c.player, ...c.enemies]
+  all.sort((f1, f2) => f1.x - f2.x)
+  for (const f of all) drawFighter(ctx, f, f.isPlayer)
 
   for (const b of bursts) drawBurst(ctx, b.x, b.y, b.age, b.life, b.seed, b.big)
   for (const t of comicTexts) drawComicText(ctx, t.text, t.x, t.y, t.age, t.life, t.seed, t.size)
@@ -377,12 +334,12 @@ function render(c: FightController) {
 function doJumpOrAirAttack() {
   const c = controller.value
   if (!c) return
-  if (c.a.grounded) {
-    c.jump(c.a)
+  if (c.player.grounded) {
+    c.jump(c.player)
   } else {
-    const before = c.a.anim
-    c.attack(c.a)
-    if (c.a.anim !== before && c.a.anim === 'airAttack') {
+    const before = c.player.anim
+    c.attack(c.player)
+    if (c.player.anim !== before && c.player.anim === 'airAttack') {
       sfxSpecial()
       hapticStrong()
     }
@@ -392,9 +349,9 @@ function doJumpOrAirAttack() {
 function doSwipeStrike(dir: -1 | 1) {
   const c = controller.value
   if (!c) return
-  const before = c.a.anim
-  c.swipeStrike(c.a, dir)
-  if (c.a.anim !== before) {
+  const before = c.player.anim
+  c.swipeStrike(c.player, dir)
+  if (c.player.anim !== before) {
     sfxSpecial()
     hapticStrong()
   }
@@ -403,9 +360,9 @@ function doSwipeStrike(dir: -1 | 1) {
 function doAttack() {
   const c = controller.value
   if (!c) return
-  const before = c.a.anim
-  c.attack(c.a)
-  const after = c.a.anim
+  const before = c.player.anim
+  c.attack(c.player)
+  const after = c.player.anim
   if (after === before) return // input buffered into an existing string, no new sfx
   if (after === 'comboFinisher' || after === 'dashAttack' || after === 'airAttack') {
     sfxSpecial()
@@ -419,7 +376,7 @@ function doAttack() {
 function setBlock(on: boolean) {
   const c = controller.value
   if (!c) return
-  c.setBlocking(c.a, on)
+  c.setBlocking(c.player, on)
 }
 
 function rematch() {
@@ -427,13 +384,22 @@ function rematch() {
   startFight()
 }
 
-const resultSub = computed(() => `SURVIVED ${wavesSurvived.value} WAVE${wavesSurvived.value === 1 ? '' : 'S'}`)
-const resultDefeatedBy = computed(() => currentProfile.value.name)
 const resultQuote = computed(() => LOSE_QUOTES[Math.floor(Math.random() * LOSE_QUOTES.length)])
+
+// ---------------- Prevent scroll / pinch-zoom (mobile game) ----------------
+function blockGesture(e: Event) {
+  e.preventDefault()
+}
+function blockMultiTouch(e: TouchEvent) {
+  if (e.touches.length > 1) e.preventDefault()
+}
 
 onMounted(async () => {
   isMobile.value = detectMobile()
   window.addEventListener('resize', onResize)
+  document.addEventListener('gesturestart', blockGesture, { passive: false })
+  document.addEventListener('gesturechange', blockGesture, { passive: false })
+  document.addEventListener('touchmove', blockMultiTouch, { passive: false })
   Promise.all([preloadSprites([DEFAULT_PLAYER_ID, DEFAULT_RIVAL_ID]), preloadBackdrops()]).then(() => (spritesReady.value = true))
   if (!isMobile.value) {
     screen.value = 'desktop-qr'
@@ -462,6 +428,9 @@ function onResize() {
 onBeforeUnmount(() => {
   cancelAnimationFrame(rafId)
   window.removeEventListener('resize', onResize)
+  document.removeEventListener('gesturestart', blockGesture)
+  document.removeEventListener('gesturechange', blockGesture)
+  document.removeEventListener('touchmove', blockMultiTouch)
   resizeObserver?.disconnect()
   window.clearTimeout(holdTimer)
 })
@@ -477,7 +446,7 @@ onBeforeUnmount(() => {
         </div>
         <div class="handheld-screen">
           <h1 class="title-lg">YOU VS WHO?!</h1>
-          <p class="sub">a scribbly office combo brawler, on your phone.</p>
+          <p class="sub">a scribbly office brawler-vs-swarm, on your phone.</p>
           <div class="qr-frame wobble-border">
             <img v-if="qrDataUrl" :src="qrDataUrl" alt="QR code to open You vs Who? on mobile" />
             <div v-else class="qr-fallback">LOADING&hellip;</div>
@@ -485,21 +454,21 @@ onBeforeUnmount(() => {
           <p class="scan-msg">SCAN WITH YOUR PHONE!</p>
         </div>
       </div>
-      <p class="desktop-note">You vs Who? is a mobile-only combo brawler. Grab your phone and scan the code above.</p>
+      <p class="desktop-note">You vs Who? is a mobile-only brawler. Grab your phone and scan the code above.</p>
     </div>
 
     <!-- Title -->
     <div v-else-if="screen === 'title'" class="screen title-screen dither-bg">
       <div class="title-burst"></div>
       <h1 class="title-huge">YOU<br />VS<br />WHO?!</h1>
-      <p class="subtitle">&mdash; ENDLESS OFFICE WAVE BRAWLER &mdash;</p>
+      <p class="subtitle">&mdash; {{ SWARM_SIZE }} VILLAINS. BARE HANDS. ONE OF YOU. &mdash;</p>
       <button class="press-start comic-btn" @click="startFight">PRESS START!</button>
       <p class="instructions wobble-border">
         DRAG to walk, hold the drag to run &middot; TAP to chain a 3-hit combo<br />
         FLICK &larr;&rarr; for a dash strike &middot; FLICK &uarr; to jump (again mid-air to strike)<br />
         PRESS &amp; HOLD still to guard
       </p>
-      <p class="footer-tag">MICROMANAGER &bull; REPLY-ALL &bull; MARATHONER &bull; INFLUENCER &bull; THE HERO &mdash; AND THEY KEEP COMING</p>
+      <p class="footer-tag">CLEAR THE OFFICE OR GO DOWN TRYING</p>
     </div>
 
     <!-- Fight -->
@@ -520,32 +489,22 @@ onBeforeUnmount(() => {
           </div>
           <span v-if="comboStep > 0" class="combo-badge">{{ comboStep }}-HIT!</span>
         </div>
-        <div class="hud-timer wobble-border">{{ wave }}</div>
-        <div class="hud-side right">
-          <span class="hud-name">{{ currentProfile.name }}</span>
-          <div class="health-bar wobble-border">
-            <div class="health-fill" :style="{ width: (opponentHealth / opponentMaxHealth) * 100 + '%', background: opponentHealth / opponentMaxHealth > 0.6 ? 'var(--c-green)' : opponentHealth / opponentMaxHealth > 0.3 ? 'var(--c-yellow)' : 'var(--c-red)' }"></div>
-          </div>
+        <div class="hud-counter wobble-border">
+          <span class="hud-counter-num">{{ enemiesRemaining }}</span>
+          <span class="hud-counter-label">LEFT</span>
         </div>
       </div>
 
       <div class="canvas-wrap" ref="canvasWrapRef">
-        <canvas
-          ref="canvasRef"
-          :width="ARENA_W"
-          :height="ARENA_H"
-          class="fight-canvas"
-          :style="{ width: canvasDisplaySize.w + 'px', height: canvasDisplaySize.h + 'px' }"
-        ></canvas>
+        <div class="canvas-frame" :style="{ width: canvasDisplaySize.w + 'px', height: canvasDisplaySize.h + 'px' }">
+          <canvas ref="canvasRef" :width="ARENA_W" :height="ARENA_H" class="fight-canvas"></canvas>
+          <div class="crt-overlay"></div>
+        </div>
         <div v-if="gesture.blockHeld" class="block-indicator">GUARDING!</div>
       </div>
 
       <div class="gesture-legend">
-        <span>&larr;&rarr; drag walk/run</span>
-        <span>&uarr; flick jump/air strike</span>
-        <span>tap combo</span>
-        <span>flick &larr;&rarr; dash strike</span>
-        <span>hold guard</span>
+        <span>drag = move</span><span>tap = punch</span><span>flick = dash/jump</span><span>hold = guard</span>
       </div>
     </div>
 
@@ -553,13 +512,13 @@ onBeforeUnmount(() => {
     <div v-else-if="screen === 'results'" class="screen results-screen dither-bg">
       <div class="results-burst"></div>
       <template v-if="controller">
-        <h2 class="results-title lose">DEFEATED!!</h2>
-        <p class="results-sub">{{ resultSub }}</p>
-        <p class="results-sub">FINISHED OFF BY {{ resultDefeatedBy }}</p>
+        <h2 class="results-title" :class="{ lose: !controller.victory }">{{ controller.victory ? 'CLEARED!!' : 'DEFEATED!!' }}</h2>
+        <p class="results-sub">{{ controller.victory ? `ALL ${SWARM_SIZE} VILLAINS DOWN` : `ENEMIES LEFT: ${enemiesRemaining}` }}</p>
+        <p v-if="!controller.victory && defeatedBy" class="results-sub">FINISHED OFF BY {{ defeatedBy }}</p>
         <p class="results-quote wobble-border">&ldquo;{{ resultQuote }}&rdquo;</p>
       </template>
       <div class="results-actions">
-        <button class="ready-btn comic-btn" @click="rematch">TRY AGAIN!</button>
+        <button class="ready-btn comic-btn" @click="rematch">{{ controller?.victory ? 'GO AGAIN!' : 'TRY AGAIN!' }}</button>
         <button class="secondary-btn comic-btn" @click="goTitle">MAIN MENU</button>
       </div>
     </div>
@@ -705,7 +664,7 @@ onBeforeUnmount(() => {
   position: relative;
   font-family: var(--font-hand);
   font-weight: 700;
-  font-size: 14px;
+  font-size: 13px;
   letter-spacing: 1px;
   color: var(--c-yellow);
 }
@@ -757,23 +716,27 @@ onBeforeUnmount(() => {
   padding: 10px 12px;
   color: #fff;
   gap: 8px;
+  background: rgba(10, 8, 6, 0.6);
+  border-bottom: 3px solid var(--c-ink);
 }
-.hud-side { display: flex; flex-direction: column; gap: 3px; position: relative; width: 120px; }
-.hud-side.right { align-items: flex-end; }
+.hud-side { display: flex; flex-direction: column; gap: 3px; position: relative; width: 150px; }
 .hud-name { font-family: var(--font-shout); font-size: 13px; letter-spacing: 0.5px; }
-.hud-timer {
+.hud-counter {
   font-family: var(--font-shout);
-  font-size: 22px;
   color: var(--c-yellow);
   background: var(--c-ink);
   border: 3px solid var(--c-yellow);
   border-radius: 50%;
-  width: 44px;
-  height: 44px;
+  width: 52px;
+  height: 52px;
   display: flex;
+  flex-direction: column;
   align-items: center;
   justify-content: center;
+  line-height: 1;
 }
+.hud-counter-num { font-size: 20px; }
+.hud-counter-label { font-family: var(--font-hand); font-size: 7px; letter-spacing: 0.5px; opacity: 0.85; }
 .health-bar {
   width: 100%;
   height: 12px;
@@ -805,9 +768,38 @@ onBeforeUnmount(() => {
   min-height: 0;
   padding: 0 4px;
 }
+.canvas-frame {
+  position: relative;
+}
 .fight-canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
   border: 4px solid #fff;
   background: var(--c-paper);
+}
+
+/* CRT overlay: dark scanlines + faint RGB fringe + vignette + a slow flicker */
+.crt-overlay {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  border-radius: 2px;
+  background:
+    repeating-linear-gradient(rgba(18, 16, 16, 0) 0, rgba(18, 16, 16, 0) 1px, rgba(0, 0, 0, 0.3) 2px, rgba(0, 0, 0, 0.3) 2px),
+    linear-gradient(90deg, rgba(255, 0, 60, 0.05), rgba(0, 255, 100, 0.02), rgba(0, 90, 255, 0.05)),
+    radial-gradient(ellipse at center, rgba(0, 0, 0, 0) 55%, rgba(0, 0, 0, 0.65) 100%);
+  background-size: 100% 3px, 3px 100%, 100% 100%;
+  mix-blend-mode: multiply;
+  animation: crtFlicker 3s infinite;
+}
+@keyframes crtFlicker {
+  0%, 100% { opacity: 0.92; }
+  8% { opacity: 0.78; }
+  10% { opacity: 0.95; }
+  50% { opacity: 0.88; }
+  78% { opacity: 0.94; }
+  92% { opacity: 0.8; }
 }
 
 .block-indicator {
@@ -822,22 +814,19 @@ onBeforeUnmount(() => {
   background: var(--c-yellow);
   border: 2px solid var(--c-ink);
   padding: 2px 12px;
+  z-index: 6;
 }
 
 .gesture-legend {
   display: flex;
-  flex-wrap: wrap;
   justify-content: center;
-  gap: 6px 10px;
-  padding: 10px 14px 20px;
+  gap: 12px;
+  padding: 6px 14px 10px;
   color: var(--c-paper-dim);
   font-family: var(--font-hand);
   font-size: 10px;
   text-align: center;
-}
-.gesture-legend span {
-  border: 1px dashed var(--c-paper-dim);
-  padding: 3px 6px;
+  opacity: 0.7;
 }
 
 /* ---------- Results ---------- */
