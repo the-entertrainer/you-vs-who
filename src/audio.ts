@@ -1,6 +1,15 @@
 let ctx: AudioContext | null = null
+let muted = false
+
+export function setMuted(v: boolean) {
+  muted = v
+}
+export function isMuted() {
+  return muted
+}
 
 function getCtx(): AudioContext | null {
+  if (muted) return null
   if (typeof window === 'undefined') return null
   if (!ctx) {
     const AC = window.AudioContext || (window as any).webkitAudioContext

@@ -1,20 +1,26 @@
+@font-face {
+  font-family: 'BoldPixels';
+  src: url('./assets/fonts/boldpixels.woff2') format('woff2'),
+       url('./assets/fonts/boldpixels.woff') format('woff');
+  font-weight: normal;
+  font-style: normal;
+  font-display: swap;
+}
+
 :root {
-  --c-paper: #fff6e5;
-  --c-paper-dim: #f2e6c9;
-  --c-panel: #ffffff;
+  --c-bg: #10131f;
+  --c-panel: #1c2138;
   --c-ink: #0a0a0a;
-  --c-ink-soft: #2b2620;
-  --c-red: #ee2b2b;
-  --c-red-dark: #a90f0f;
+  --c-ink-soft: #d8dcec;
+  --c-red: #ee3b3b;
   --c-yellow: #ffd23f;
   --c-yellow-dark: #f2a900;
-  --c-blue: #1c3fa8;
-  --c-blue-dark: #10265f;
-  --c-green: #2fb84f;
-  --c-purple: #7b3fa0;
+  --c-blue: #3f7fe0;
+  --c-blue-dark: #16233f;
+  --c-green: #3fd07a;
 
-  --font-shout: 'Bangers', 'Space Mono', cursive;
-  --font-hand: 'Kalam', 'JetBrains Mono', sans-serif;
+  --font-pixel: 'BoldPixels', 'Space Mono', monospace;
+  --font-body: 'JetBrains Mono', monospace;
 }
 
 * {
@@ -26,9 +32,9 @@ html, body {
   padding: 0;
   width: 100%;
   height: 100%;
-  background: var(--c-paper);
-  color: var(--c-ink);
-  font-family: var(--font-hand);
+  background: var(--c-bg);
+  color: var(--c-ink-soft);
+  font-family: var(--font-body);
   overscroll-behavior: none;
   -webkit-tap-highlight-color: transparent;
   -webkit-user-select: none;
@@ -44,46 +50,126 @@ html, body {
 }
 
 button {
-  font-family: var(--font-shout);
+  font-family: var(--font-pixel);
   cursor: pointer;
   touch-action: manipulation;
+  text-rendering: optimizeSpeed;
 }
 
-img {
-  image-rendering: auto;
+img, canvas {
+  image-rendering: pixelated;
 }
 
-/* big loose halftone dots, comic-print style */
-.dither-bg {
-  background-image: radial-gradient(var(--c-ink) 1.6px, transparent 0);
-  background-size: 15px 15px;
-  background-position: -4px -4px;
-  opacity: 1;
-}
-
-/* hand-scribbled, slightly wobbly rectangle border via SVG turbulence filter */
-.wobble-border {
-  filter: url(#wobble);
-}
-.wobble-border-lg {
-  filter: url(#wobble-lg);
-}
-
-/* thick ink outline + hard offset shadow, comic panel look */
-.comic-panel {
-  background: var(--c-panel);
-  border: 3px solid var(--c-ink);
-  box-shadow: 6px 6px 0 var(--c-ink);
-}
-
-.comic-btn {
-  font-family: var(--font-shout);
+/* ---------- Bubble-kit pixel buttons ----------
+   9-slice border-image so the chunky rounded-corner bevel survives being
+   stretched into wide rectangular buttons (PLAY, TRY AGAIN, etc). */
+.pixel-btn {
+  position: relative;
+  border-style: solid;
+  border-width: 12px;
+  border-image-repeat: stretch;
+  image-rendering: pixelated;
+  background-color: transparent;
+  background-position: center;
+  background-size: 100% 100%;
+  color: #fff;
+  font-family: var(--font-pixel);
   letter-spacing: 1px;
-  border: 3px solid var(--c-ink);
-  box-shadow: 5px 5px 0 var(--c-ink);
-  transition: transform 0.05s;
+  transition: transform 0.04s;
 }
-.comic-btn:active {
-  transform: translate(4px, 4px);
-  box-shadow: 1px 1px 0 var(--c-ink);
+.pixel-btn:active {
+  transform: translateY(2px) scale(0.98);
+}
+.pixel-btn.green {
+  border-image-source: url('./assets/ui/green/button-up.png');
+  border-image-slice: 40 fill;
+}
+.pixel-btn.green:active {
+  border-image-source: url('./assets/ui/green/button-down.png');
+}
+.pixel-btn.red {
+  border-image-source: url('./assets/ui/red/button-up.png');
+  border-image-slice: 40 fill;
+}
+.pixel-btn.red:active {
+  border-image-source: url('./assets/ui/red/button-down.png');
+}
+.pixel-btn.black {
+  border-image-source: url('./assets/ui/black/button-up.png');
+  border-image-slice: 40 fill;
+}
+.pixel-btn.black:active {
+  border-image-source: url('./assets/ui/black/button-down.png');
+}
+.pixel-btn.blue {
+  border-image-source: url('./assets/ui/blue/button-up.png');
+  border-image-slice: 40 fill;
+}
+.pixel-btn.blue:active {
+  border-image-source: url('./assets/ui/blue/button-down.png');
+}
+
+/* ---------- Bubble-kit panel (dialog / card background) ---------- */
+.pixel-panel {
+  border-style: solid;
+  border-width: 16px;
+  border-image-repeat: stretch;
+  image-rendering: pixelated;
+}
+.pixel-panel.black {
+  border-image-source: url('./assets/ui/black/popup.png');
+  border-image-slice: 40 fill;
+}
+.pixel-panel.blue {
+  border-image-source: url('./assets/ui/blue/popup.png');
+  border-image-slice: 40 fill;
+}
+
+/* ---------- Bubble-kit health/progress bar ---------- */
+.pixel-bar {
+  position: relative;
+  border-style: solid;
+  border-width: 8px;
+  border-image-repeat: stretch;
+  border-image-slice: 40 fill;
+  image-rendering: pixelated;
+  height: 22px;
+  padding: 3px;
+}
+.pixel-bar.black { border-image-source: url('./assets/ui/black/bar-panel.png'); }
+.pixel-bar-fill {
+  height: 100%;
+  image-rendering: pixelated;
+  background-repeat: repeat-x;
+  background-size: 4px 100%;
+  transition: width 0.15s;
+}
+.pixel-bar-fill.green { background-image: url('./assets/ui/green/bar-fill.png'); }
+.pixel-bar-fill.yellow { background-image: url('./assets/ui/yellow/bar-fill.png'); }
+.pixel-bar-fill.red { background-image: url('./assets/ui/red/bar-fill.png'); }
+
+.pixel-icon-btn {
+  width: 40px;
+  height: 40px;
+  border: none;
+  background: rgba(10, 13, 25, 0.7);
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+}
+.pixel-icon-btn img {
+  width: 55%;
+  height: 55%;
+  object-fit: contain;
+}
+.pixel-icon-btn:active {
+  transform: scale(0.92);
+}
+
+/* faint scanline texture kept as a subtle global cohesion touch */
+.dither-bg {
+  background-image: radial-gradient(rgba(255, 255, 255, 0.06) 1px, transparent 0);
+  background-size: 14px 14px;
 }

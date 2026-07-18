@@ -2,9 +2,9 @@ import { CLIPS, DEFAULT_CHARACTER, type AnimName } from './anim'
 
 export const ARENA_W = 640
 export const ARENA_H = 270
-export const GROUND_Y = 208
-export const SPRITE_W = 132
-export const SPRITE_H = 137
+export const GROUND_Y = 200
+export const SPRITE_W = 96
+export const SPRITE_H = 100
 export const MAX_HEALTH = 100
 
 export const WALK_SPEED = 112

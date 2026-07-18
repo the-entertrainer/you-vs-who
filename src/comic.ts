@@ -83,7 +83,7 @@ export function drawComicText(
   ctx.translate(x, y - rise)
   ctx.rotate(rotation)
   ctx.scale(scale, scale)
-  ctx.font = `700 ${fontSize}px "Bangers", "Kalam", sans-serif`
+  ctx.font = `${fontSize}px "BoldPixels", "Space Mono", sans-serif`
   ctx.textAlign = 'center'
   ctx.textBaseline = 'middle'
   ctx.lineJoin = 'round'

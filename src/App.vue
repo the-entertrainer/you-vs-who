@@ -4,13 +4,19 @@ import QRCode from 'qrcode'
 import { LOSE_QUOTES } from './data'
 import { DEFAULT_PLAYER_ID, DEFAULT_RIVAL_ID } from './characters'
 import { ENEMY_ROSTER } from './enemies'
-import { BACKDROPS, getBackdropImage, preloadBackdrops, type Backdrop } from './backdrops'
-import { ARENA_H, ARENA_W, FightController, runEnemyAI, type FightEvent, type FighterState } from './engine'
+import { generateBackdrop } from './procgen'
+import { ARENA_H, ARENA_W, FightController, GROUND_Y, runEnemyAI, type FightEvent, type FighterState } from './engine'
 import { drawFighter } from './sprite'
 import { preloadSprites } from './anim'
 import { drawBurst, drawComicText, pickLaunchLine, pickOnomatopoeia } from './comic'
 import { hapticLight, hapticMedium, hapticStrong } from './haptics'
-import { sfxBlock, sfxLose, sfxMenuConfirm, sfxPunch, sfxSpecial, sfxUnlock, sfxWin } from './audio'
+import { isMuted, setMuted, sfxBlock, sfxLose, sfxMenuConfirm, sfxPunch, sfxSpecial, sfxUnlock, sfxWin } from './audio'
+
+import playIcon from './assets/ui/icons/play-black.png'
+import pauseIcon from './assets/ui/icons/pause-black.png'
+import homeIcon from './assets/ui/icons/home-black.png'
+import soundOnIcon from './assets/ui/icons/sound-on-black.png'
+import soundOffIcon from './assets/ui/icons/sound-off-black.png'
 
 type Screen = 'desktop-qr' | 'title' | 'fight' | 'results'
 
@@ -20,6 +26,14 @@ const screen = ref<Screen>('title')
 const isMobile = ref(true)
 const qrDataUrl = ref('')
 const spritesReady = ref(false)
+const soundOn = ref(!isMuted())
+const paused = ref(false)
+
+function toggleSound() {
+  soundOn.value = !soundOn.value
+  setMuted(!soundOn.value)
+  if (soundOn.value) sfxMenuConfirm()
+}
 
 function detectMobile() {
   if (typeof window === 'undefined') return true
@@ -31,6 +45,7 @@ function detectMobile() {
 
 function goTitle() {
   sfxMenuConfirm()
+  paused.value = false
   screen.value = 'title'
 }
 
@@ -70,10 +85,15 @@ const playerHealth = ref(100)
 const playerMaxHealth = ref(100)
 const enemiesRemaining = ref(SWARM_SIZE)
 const comboStep = ref(0)
-const matchBackdrop = shallowRef<Backdrop>(BACKDROPS[0])
 const defeatedBy = ref('')
+let backdrop: HTMLCanvasElement | null = null
 let shake = 0
 let slowMoMs = 0
+
+const healthTier = computed(() => {
+  const r = playerHealth.value / playerMaxHealth.value
+  return r > 0.6 ? 'green' : r > 0.3 ? 'yellow' : 'red'
+})
 
 // ---------------- Swipe / tap / hold gesture recognizer ----------------
 // Everything is one full-surface gesture: drag horizontally to walk
@@ -102,6 +122,7 @@ const gesture = reactive({
 let holdTimer = 0
 
 function gestureDown(e: PointerEvent) {
+  if (paused.value) return
   gesture.active = true
   gesture.dragging = false
   gesture.blockHeld = false
@@ -178,13 +199,13 @@ function gestureCancel() {
 async function startFight() {
   sfxUnlock()
   if (!spritesReady.value) {
-    await Promise.all([preloadSprites([DEFAULT_PLAYER_ID, DEFAULT_RIVAL_ID]), preloadBackdrops()])
+    await preloadSprites([DEFAULT_PLAYER_ID, DEFAULT_RIVAL_ID])
     spritesReady.value = true
   }
   const c = new FightController(DEFAULT_PLAYER_ID)
   c.spawnSwarm(SWARM_SIZE, ENEMY_ROSTER, DEFAULT_RIVAL_ID)
   controller.value = c
-  matchBackdrop.value = BACKDROPS[Math.floor(Math.random() * BACKDROPS.length)]
+  backdrop = generateBackdrop(ARENA_W, ARENA_H, GROUND_Y, Math.floor(Math.random() * 1e9)).canvas
   enemiesRemaining.value = SWARM_SIZE
   defeatedBy.value = ''
   bursts.length = 0
@@ -192,6 +213,7 @@ async function startFight() {
   shake = 0
   slowMoMs = 0
   comboStep.value = 0
+  paused.value = false
   screen.value = 'fight'
   lastTs = 0
   cancelAnimationFrame(rafId)
@@ -219,9 +241,24 @@ function endFight() {
   screen.value = 'results'
 }
 
+function pauseFight() {
+  if (screen.value !== 'fight' || paused.value) return
+  paused.value = true
+  sfxMenuConfirm()
+  cancelAnimationFrame(rafId)
+}
+
+function resumeFight() {
+  if (!paused.value) return
+  paused.value = false
+  sfxMenuConfirm()
+  lastTs = 0
+  rafId = requestAnimationFrame(loop)
+}
+
 function loop(ts: number) {
   const c = controller.value
-  if (!c || screen.value !== 'fight') return
+  if (!c || screen.value !== 'fight' || paused.value) return
   if (!lastTs) lastTs = ts
   let realDt = (ts - lastTs) / 1000
   lastTs = ts
@@ -302,7 +339,7 @@ function render(c: FightController) {
   if (!canvas) return
   const ctx = canvas.getContext('2d')
   if (!ctx) return
-  ctx.imageSmoothingEnabled = true
+  ctx.imageSmoothingEnabled = false
   ctx.clearRect(0, 0, ARENA_W, ARENA_H)
 
   ctx.save()
@@ -310,16 +347,12 @@ function render(c: FightController) {
     ctx.translate((Math.random() - 0.5) * shake, (Math.random() - 0.5) * shake)
   }
 
-  const bg = getBackdropImage(matchBackdrop.value.src)
-  if (bg.complete && bg.naturalWidth > 0) {
-    ctx.drawImage(bg, 0, 0, ARENA_W, ARENA_H)
+  if (backdrop) {
+    ctx.drawImage(backdrop, 0, 0)
   } else {
-    ctx.fillStyle = '#1d1c13'
+    ctx.fillStyle = '#10131f'
     ctx.fillRect(0, 0, ARENA_W, ARENA_H)
   }
-  // darken slightly so the fighters (which get their own contact-shadow pop) read clearly against a busy photo
-  ctx.fillStyle = 'rgba(10, 8, 6, 0.28)'
-  ctx.fillRect(0, 0, ARENA_W, ARENA_H)
 
   const all: FighterState[] = [c.player, ...c.enemies]
   all.sort((f1, f2) => f1.x - f2.x)
@@ -400,13 +433,13 @@ onMounted(async () => {
   document.addEventListener('gesturestart', blockGesture, { passive: false })
   document.addEventListener('gesturechange', blockGesture, { passive: false })
   document.addEventListener('touchmove', blockMultiTouch, { passive: false })
-  Promise.all([preloadSprites([DEFAULT_PLAYER_ID, DEFAULT_RIVAL_ID]), preloadBackdrops()]).then(() => (spritesReady.value = true))
+  preloadSprites([DEFAULT_PLAYER_ID, DEFAULT_RIVAL_ID]).then(() => (spritesReady.value = true))
   if (!isMobile.value) {
     screen.value = 'desktop-qr'
     try {
       qrDataUrl.value = await QRCode.toDataURL(window.location.href, {
         margin: 1,
-        color: { dark: '#0a0a0a', light: '#fff6e5' },
+        color: { dark: '#0a0a0a', light: '#ffffff' },
         width: 240,
       })
     } catch {
@@ -437,37 +470,40 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div class="shell dither-bg">
+  <div class="shell">
     <!-- Desktop QR screen -->
-    <div v-if="screen === 'desktop-qr'" class="desktop-wrap">
-      <div class="handheld wobble-border">
-        <div class="handheld-top">
-          <span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span>
+    <div v-if="screen === 'desktop-qr'" class="desktop-wrap dither-bg">
+      <div class="pixel-panel black qr-card">
+        <h1 class="title-lg">YOU VS WHO?!</h1>
+        <p class="sub">a pixel brawler-vs-swarm, on your phone.</p>
+        <div class="qr-frame">
+          <img v-if="qrDataUrl" :src="qrDataUrl" alt="QR code to open You vs Who? on mobile" />
+          <div v-else class="qr-fallback">LOADING&hellip;</div>
         </div>
-        <div class="handheld-screen">
-          <h1 class="title-lg">YOU VS WHO?!</h1>
-          <p class="sub">a scribbly office brawler-vs-swarm, on your phone.</p>
-          <div class="qr-frame wobble-border">
-            <img v-if="qrDataUrl" :src="qrDataUrl" alt="QR code to open You vs Who? on mobile" />
-            <div v-else class="qr-fallback">LOADING&hellip;</div>
-          </div>
-          <p class="scan-msg">SCAN WITH YOUR PHONE!</p>
-        </div>
+        <p class="scan-msg">SCAN WITH YOUR PHONE!</p>
       </div>
       <p class="desktop-note">You vs Who? is a mobile-only brawler. Grab your phone and scan the code above.</p>
     </div>
 
     <!-- Title -->
     <div v-else-if="screen === 'title'" class="screen title-screen dither-bg">
-      <div class="title-burst"></div>
-      <h1 class="title-huge">YOU<br />VS<br />WHO?!</h1>
-      <p class="subtitle">&mdash; {{ SWARM_SIZE }} VILLAINS. BARE HANDS. ONE OF YOU. &mdash;</p>
-      <button class="press-start comic-btn" @click="startFight">PRESS START!</button>
-      <p class="instructions wobble-border">
-        DRAG to walk, hold the drag to run &middot; TAP to chain a 3-hit combo<br />
-        FLICK &larr;&rarr; for a dash strike &middot; FLICK &uarr; to jump (again mid-air to strike)<br />
-        PRESS &amp; HOLD still to guard
-      </p>
+      <div class="title-wrap">
+        <h1 class="title-huge">YOU<br />VS<br />WHO?!</h1>
+        <p class="subtitle">{{ SWARM_SIZE }} VILLAINS &middot; BARE HANDS &middot; ONE OF YOU</p>
+      </div>
+      <button class="pixel-btn green play-btn" @click="startFight">
+        <img :src="playIcon" alt="" class="btn-icon" />
+        PLAY
+      </button>
+      <div class="pixel-panel black instructions-panel">
+        <p class="instructions">
+          DRAG to walk / run &middot; TAP to combo<br />
+          FLICK to dash-strike or jump &middot; HOLD to guard
+        </p>
+      </div>
+      <button class="sound-toggle" @click="toggleSound">
+        <img :src="soundOn ? soundOnIcon : soundOffIcon" alt="toggle sound" />
+      </button>
       <p class="footer-tag">CLEAR THE OFFICE OR GO DOWN TRYING</p>
     </div>
 
@@ -484,14 +520,19 @@ onBeforeUnmount(() => {
       <div class="fight-hud">
         <div class="hud-side">
           <span class="hud-name">YOU</span>
-          <div class="health-bar wobble-border">
-            <div class="health-fill" :style="{ width: (playerHealth / playerMaxHealth) * 100 + '%', background: playerHealth / playerMaxHealth > 0.6 ? 'var(--c-green)' : playerHealth / playerMaxHealth > 0.3 ? 'var(--c-yellow)' : 'var(--c-red)' }"></div>
+          <div class="pixel-bar black">
+            <div class="pixel-bar-fill" :class="healthTier" :style="{ width: (playerHealth / playerMaxHealth) * 100 + '%' }"></div>
           </div>
           <span v-if="comboStep > 0" class="combo-badge">{{ comboStep }}-HIT!</span>
         </div>
-        <div class="hud-counter wobble-border">
-          <span class="hud-counter-num">{{ enemiesRemaining }}</span>
-          <span class="hud-counter-label">LEFT</span>
+        <div class="hud-right">
+          <div class="hud-counter">
+            <span class="hud-counter-num">{{ enemiesRemaining }}</span>
+            <span class="hud-counter-label">LEFT</span>
+          </div>
+          <button class="pixel-icon-btn" @click="pauseFight">
+            <img :src="pauseIcon" alt="pause" />
+          </button>
         </div>
       </div>
 
@@ -501,25 +542,43 @@ onBeforeUnmount(() => {
           <div class="crt-overlay"></div>
         </div>
         <div v-if="gesture.blockHeld" class="block-indicator">GUARDING!</div>
+
+        <!-- Pause overlay -->
+        <div v-if="paused" class="pause-overlay">
+          <div class="pixel-panel black pause-card">
+            <h2 class="pause-title">PAUSED</h2>
+            <button class="pixel-btn green" @click="resumeFight">RESUME</button>
+            <button class="pixel-btn blue" @click="toggleSound">
+              <img :src="soundOn ? soundOnIcon : soundOffIcon" alt="" class="btn-icon" />
+              SOUND {{ soundOn ? 'ON' : 'OFF' }}
+            </button>
+            <button class="pixel-btn red" @click="goTitle">
+              <img :src="homeIcon" alt="" class="btn-icon" />
+              MAIN MENU
+            </button>
+          </div>
+        </div>
       </div>
 
       <div class="gesture-legend">
-        <span>drag = move</span><span>tap = punch</span><span>flick = dash/jump</span><span>hold = guard</span>
+        <span>drag=move</span><span>tap=punch</span><span>flick=dash/jump</span><span>hold=guard</span>
       </div>
     </div>
 
     <!-- Results -->
     <div v-else-if="screen === 'results'" class="screen results-screen dither-bg">
-      <div class="results-burst"></div>
-      <template v-if="controller">
+      <div class="pixel-panel black results-card" v-if="controller">
         <h2 class="results-title" :class="{ lose: !controller.victory }">{{ controller.victory ? 'CLEARED!!' : 'DEFEATED!!' }}</h2>
         <p class="results-sub">{{ controller.victory ? `ALL ${SWARM_SIZE} VILLAINS DOWN` : `ENEMIES LEFT: ${enemiesRemaining}` }}</p>
         <p v-if="!controller.victory && defeatedBy" class="results-sub">FINISHED OFF BY {{ defeatedBy }}</p>
-        <p class="results-quote wobble-border">&ldquo;{{ resultQuote }}&rdquo;</p>
-      </template>
-      <div class="results-actions">
-        <button class="ready-btn comic-btn" @click="rematch">{{ controller?.victory ? 'GO AGAIN!' : 'TRY AGAIN!' }}</button>
-        <button class="secondary-btn comic-btn" @click="goTitle">MAIN MENU</button>
+        <p class="results-quote">&ldquo;{{ resultQuote }}&rdquo;</p>
+        <div class="results-actions">
+          <button class="pixel-btn green" @click="rematch">{{ controller?.victory ? 'GO AGAIN' : 'TRY AGAIN' }}</button>
+          <button class="pixel-btn black" @click="goTitle">
+            <img :src="homeIcon" alt="" class="btn-icon" />
+            MAIN MENU
+          </button>
+        </div>
       </div>
     </div>
   </div>
@@ -530,7 +589,7 @@ onBeforeUnmount(() => {
   position: relative;
   width: 100%;
   min-height: 100dvh;
-  background: var(--c-paper);
+  background: var(--c-bg);
   overflow: hidden;
 }
 
@@ -550,55 +609,29 @@ onBeforeUnmount(() => {
   justify-content: center;
   gap: 24px;
   padding: 24px;
-  background: var(--c-blue);
+  background: var(--c-blue-dark);
 }
-.handheld {
-  width: 340px;
-  background: var(--c-yellow);
-  border: 5px solid var(--c-ink);
-  padding: 16px;
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-  transform: rotate(-1deg);
-}
-.handheld-top {
-  display: flex;
-  gap: 8px;
-  justify-content: flex-end;
-}
-.dot {
-  width: 12px;
-  height: 12px;
-  border-radius: 50%;
-  border: 2px solid var(--c-ink);
-}
-.dot.red { background: var(--c-red); }
-.dot.yellow { background: var(--c-yellow-dark); }
-.dot.green { background: var(--c-green); }
-.handheld-screen {
-  background: var(--c-panel);
-  border: 3px solid var(--c-ink);
-  padding: 20px 16px;
+.qr-card {
+  width: 320px;
+  padding: 24px 20px;
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 8px;
+  gap: 10px;
   text-align: center;
 }
 .title-lg {
-  font-family: var(--font-shout);
-  font-size: 32px;
-  color: var(--c-red);
-  -webkit-text-stroke: 1.5px var(--c-ink);
+  font-family: var(--font-pixel);
+  font-size: 28px;
+  color: var(--c-yellow);
   margin: 0;
   letter-spacing: 1px;
 }
-.sub { color: var(--c-ink-soft); margin: 0 0 8px; }
+.sub { color: var(--c-ink-soft); margin: 0 0 8px; font-size: 12px; }
 .qr-frame {
   width: 200px;
   height: 200px;
-  border: 4px solid var(--c-ink);
+  border: 4px solid #fff;
   background: #fff;
   display: flex;
   align-items: center;
@@ -606,18 +639,18 @@ onBeforeUnmount(() => {
   overflow: hidden;
 }
 .qr-frame img { width: 100%; height: 100%; }
-.qr-fallback { font-size: 12px; }
+.qr-fallback { font-size: 12px; color: #000; }
 .scan-msg {
-  font-family: var(--font-shout);
+  font-family: var(--font-pixel);
   letter-spacing: 1px;
-  color: var(--c-red);
+  color: var(--c-green);
   margin: 8px 0 0;
-  font-size: 18px;
+  font-size: 14px;
 }
 .desktop-note {
   max-width: 320px;
   text-align: center;
-  color: #fff;
+  color: var(--c-ink-soft);
   font-size: 13px;
 }
 
@@ -626,84 +659,74 @@ onBeforeUnmount(() => {
   align-items: center;
   justify-content: center;
   text-align: center;
-  gap: 2.5vh;
+  gap: 3.5vh;
   padding: 24px;
-  background: var(--c-blue);
+  background: radial-gradient(ellipse at top, var(--c-blue-dark) 0%, var(--c-bg) 70%);
   color: #fff;
 }
-.title-burst {
-  position: absolute;
-  top: 18%;
-  left: 50%;
-  width: 78vw;
-  height: 78vw;
-  max-width: 420px;
-  max-height: 420px;
-  transform: translate(-50%, -50%) rotate(8deg);
-  background: var(--c-yellow);
-  clip-path: polygon(
-    50% 0%, 61% 15%, 78% 6%, 78% 25%, 98% 25%, 87% 40%, 100% 50%,
-    87% 60%, 98% 75%, 78% 75%, 78% 94%, 61% 85%, 50% 100%, 39% 85%,
-    22% 94%, 22% 75%, 2% 75%, 13% 60%, 0% 50%, 13% 40%, 2% 25%,
-    22% 25%, 22% 6%, 39% 15%
-  );
-  opacity: 0.9;
-}
+.title-wrap { display: flex; flex-direction: column; gap: 10px; }
 .title-huge {
-  position: relative;
-  font-family: var(--font-shout);
-  font-size: 17vw;
-  line-height: 0.9;
-  color: var(--c-red);
+  font-family: var(--font-pixel);
+  font-size: 15vw;
+  line-height: 1.05;
+  color: var(--c-yellow);
   margin: 0;
-  letter-spacing: 1px;
-  -webkit-text-stroke: 3px var(--c-ink);
-  transform: rotate(-2deg);
+  letter-spacing: 2px;
+  text-shadow: 4px 4px 0 var(--c-red), 4px 4px 0 4px rgba(0,0,0,0.4);
 }
 .subtitle {
-  position: relative;
-  font-family: var(--font-hand);
+  font-family: var(--font-body);
   font-weight: 700;
-  font-size: 13px;
+  font-size: 11px;
   letter-spacing: 1px;
-  color: var(--c-yellow);
+  color: var(--c-ink-soft);
 }
-.press-start {
-  position: relative;
-  margin-top: 8px;
-  background: var(--c-red);
-  color: #fff;
-  padding: 14px 30px;
-  font-size: 22px;
-  animation: pulse 1.1s ease-in-out infinite;
+.play-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 16px 40px;
+  font-size: 20px;
+  animation: pulse 1.3s ease-in-out infinite;
 }
-@keyframes pulse { 50% { opacity: 0.82; } }
-.instructions {
-  position: relative;
+.btn-icon { width: 18px; height: 18px; image-rendering: pixelated; }
+@keyframes pulse { 50% { transform: scale(1.04); } }
+.instructions-panel {
   max-width: 320px;
-  font-family: var(--font-hand);
-  font-size: 12px;
-  line-height: 1.7;
-  color: var(--c-ink);
-  background: var(--c-panel);
-  padding: 10px 14px;
-  transform: rotate(-0.6deg);
+  padding: 12px 16px;
 }
+.instructions {
+  margin: 0;
+  font-family: var(--font-body);
+  font-size: 11px;
+  line-height: 1.8;
+  color: var(--c-ink-soft);
+  text-align: center;
+}
+.sound-toggle {
+  border: none;
+  background: none;
+  width: 32px;
+  height: 32px;
+  opacity: 0.7;
+}
+.sound-toggle img { width: 100%; height: 100%; image-rendering: pixelated; }
 .footer-tag {
   position: absolute;
   bottom: 16px;
   left: 0;
   right: 0;
-  font-family: var(--font-hand);
-  font-size: 11px;
+  font-family: var(--font-body);
+  font-size: 10px;
   letter-spacing: 0.5px;
-  color: var(--c-yellow);
-  opacity: 0.9;
+  color: var(--c-ink-soft);
+  opacity: 0.6;
 }
 
 /* ---------- Fight ---------- */
 .fight-screen {
-  background: var(--c-ink);
+  background: #000;
   height: 100dvh;
   justify-content: space-between;
   touch-action: none;
@@ -716,46 +739,35 @@ onBeforeUnmount(() => {
   padding: 10px 12px;
   color: #fff;
   gap: 8px;
-  background: rgba(10, 8, 6, 0.6);
-  border-bottom: 3px solid var(--c-ink);
+  background: rgba(10, 13, 25, 0.75);
+  border-bottom: 2px solid #000;
 }
-.hud-side { display: flex; flex-direction: column; gap: 3px; position: relative; width: 150px; }
-.hud-name { font-family: var(--font-shout); font-size: 13px; letter-spacing: 0.5px; }
+.hud-side { display: flex; flex-direction: column; gap: 4px; position: relative; width: 160px; }
+.hud-name { font-family: var(--font-pixel); font-size: 12px; letter-spacing: 0.5px; color: var(--c-blue); }
+.hud-right { display: flex; align-items: center; gap: 10px; }
 .hud-counter {
-  font-family: var(--font-shout);
+  font-family: var(--font-pixel);
   color: var(--c-yellow);
-  background: var(--c-ink);
-  border: 3px solid var(--c-yellow);
+  background: rgba(0,0,0,0.5);
+  border: 2px solid var(--c-yellow);
   border-radius: 50%;
-  width: 52px;
-  height: 52px;
+  width: 46px;
+  height: 46px;
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
   line-height: 1;
 }
-.hud-counter-num { font-size: 20px; }
-.hud-counter-label { font-family: var(--font-hand); font-size: 7px; letter-spacing: 0.5px; opacity: 0.85; }
-.health-bar {
-  width: 100%;
-  height: 12px;
-  background: #fff;
-  border: 2px solid var(--c-ink);
-  overflow: hidden;
-}
-.health-fill {
-  height: 100%;
-  transition: width 0.15s;
-}
+.hud-counter-num { font-size: 16px; }
+.hud-counter-label { font-family: var(--font-body); font-size: 6px; letter-spacing: 0.5px; opacity: 0.85; }
 .combo-badge {
-  font-family: var(--font-shout);
-  font-size: 12px;
+  font-family: var(--font-pixel);
+  font-size: 11px;
   letter-spacing: 0.5px;
-  color: var(--c-ink);
+  color: #000;
   background: var(--c-yellow);
-  border: 2px solid var(--c-ink);
-  padding: 0px 6px;
+  padding: 1px 6px;
   align-self: flex-start;
 }
 
@@ -775,8 +787,9 @@ onBeforeUnmount(() => {
   display: block;
   width: 100%;
   height: 100%;
-  border: 4px solid #fff;
-  background: var(--c-paper);
+  border: 3px solid #000;
+  outline: 2px solid #3a4166;
+  background: #10131f;
 }
 
 /* CRT overlay: dark scanlines + faint RGB fringe + vignette + a slow flicker */
@@ -784,7 +797,6 @@ onBeforeUnmount(() => {
   position: absolute;
   inset: 0;
   pointer-events: none;
-  border-radius: 2px;
   background:
     repeating-linear-gradient(rgba(18, 16, 16, 0) 0, rgba(18, 16, 16, 0) 1px, rgba(0, 0, 0, 0.3) 2px, rgba(0, 0, 0, 0.3) 2px),
     linear-gradient(90deg, rgba(255, 0, 60, 0.05), rgba(0, 255, 100, 0.02), rgba(0, 90, 255, 0.05)),
@@ -807,14 +819,46 @@ onBeforeUnmount(() => {
   bottom: 6px;
   left: 50%;
   transform: translateX(-50%);
-  font-family: var(--font-shout);
-  font-size: 14px;
+  font-family: var(--font-pixel);
+  font-size: 13px;
   letter-spacing: 1px;
-  color: var(--c-ink);
+  color: #000;
   background: var(--c-yellow);
-  border: 2px solid var(--c-ink);
-  padding: 2px 12px;
+  padding: 3px 12px;
   z-index: 6;
+}
+
+.pause-overlay {
+  position: absolute;
+  inset: 0;
+  background: rgba(5, 6, 12, 0.75);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 10;
+}
+.pause-card {
+  width: 240px;
+  padding: 20px 18px;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 12px;
+}
+.pause-title {
+  font-family: var(--font-pixel);
+  color: var(--c-yellow);
+  text-align: center;
+  margin: 0 0 6px;
+  font-size: 20px;
+}
+.pause-card .pixel-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 10px;
+  font-size: 13px;
 }
 
 .gesture-legend {
@@ -822,11 +866,11 @@ onBeforeUnmount(() => {
   justify-content: center;
   gap: 12px;
   padding: 6px 14px 10px;
-  color: var(--c-paper-dim);
-  font-family: var(--font-hand);
-  font-size: 10px;
+  color: var(--c-ink-soft);
+  font-family: var(--font-body);
+  font-size: 9px;
   text-align: center;
-  opacity: 0.7;
+  opacity: 0.55;
 }
 
 /* ---------- Results ---------- */
@@ -836,68 +880,49 @@ onBeforeUnmount(() => {
   text-align: center;
   gap: 10px;
   padding: 24px;
-  background: var(--c-blue);
+  background: radial-gradient(ellipse at center, var(--c-blue-dark) 0%, var(--c-bg) 75%);
   color: #fff;
   overflow: hidden;
 }
-.results-burst {
-  position: absolute;
-  top: 30%;
-  left: 50%;
-  width: 100vw;
-  height: 100vw;
-  max-width: 480px;
-  max-height: 480px;
-  transform: translate(-50%, -50%);
-  background: var(--c-yellow);
-  clip-path: polygon(
-    50% 0%, 61% 15%, 78% 6%, 78% 25%, 98% 25%, 87% 40%, 100% 50%,
-    87% 60%, 98% 75%, 78% 75%, 78% 94%, 61% 85%, 50% 100%, 39% 85%,
-    22% 94%, 22% 75%, 2% 75%, 13% 60%, 0% 50%, 13% 40%, 2% 25%,
-    22% 25%, 22% 6%, 39% 15%
-  );
-  opacity: 0.85;
+.results-card {
+  width: 300px;
+  padding: 24px 20px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
 }
 .results-title {
-  position: relative;
-  font-family: var(--font-shout);
-  font-size: 46px;
+  font-family: var(--font-pixel);
+  font-size: 30px;
   color: var(--c-green);
   margin: 0;
-  -webkit-text-stroke: 3px var(--c-ink);
-  transform: rotate(-2deg);
+  letter-spacing: 1px;
 }
 .results-title.lose { color: var(--c-red); }
 .results-sub {
-  position: relative;
-  font-family: var(--font-hand);
+  font-family: var(--font-body);
   font-weight: 700;
-  font-size: 14px;
-  letter-spacing: 1px;
-  opacity: 0.9;
-  margin: 0 0 8px;
+  font-size: 12px;
+  letter-spacing: 0.5px;
+  opacity: 0.85;
+  margin: 0;
 }
 .results-quote {
-  position: relative;
-  font-family: var(--font-hand);
-  color: var(--c-ink);
-  background: var(--c-panel);
-  max-width: 300px;
-  margin: 8px 0 20px;
-  padding: 12px 16px;
-  transform: rotate(0.8deg);
+  font-family: var(--font-body);
+  font-style: italic;
+  color: var(--c-ink-soft);
+  max-width: 260px;
+  margin: 10px 0 6px;
+  font-size: 12px;
 }
-.results-actions { position: relative; display: flex; flex-direction: column; gap: 12px; width: 100%; max-width: 280px; }
-.secondary-btn {
-  background: var(--c-panel);
-  color: var(--c-ink);
+.results-actions { display: flex; flex-direction: column; gap: 12px; width: 100%; margin-top: 8px; }
+.results-actions .pixel-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
   padding: 12px;
-  font-size: 16px;
-}
-.ready-btn {
-  background: var(--c-yellow);
-  color: var(--c-ink);
-  padding: 15px;
-  font-size: 18px;
+  font-size: 15px;
 }
 </style>
