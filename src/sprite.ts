@@ -62,8 +62,18 @@ export function drawFighter(ctx: CanvasRenderingContext2D, f: FighterState, isPl
 
   // feet anchored at f.y (ground line when grounded)
   ctx.translate(cx, f.y + FOOT_MARGIN)
-  if (f.anim === 'launched') ctx.rotate(f.spinAngle)
+  // Flip before rotating so spin direction reads the same regardless of
+  // which way the fighter was facing when launched.
   if (f.facing === -1) ctx.scale(-1, 1)
+  if (f.anim === 'launched') {
+    // Pivot around the sprite's visual center of mass, not the foot anchor —
+    // rotating about the feet made a launched fighter orbit an invisible
+    // point below them instead of tumbling like a ragdoll.
+    const centerY = -(SPRITE_H + FOOT_MARGIN) / 2
+    ctx.translate(0, centerY)
+    ctx.rotate(f.spinAngle)
+    ctx.translate(0, -centerY)
+  }
 
   const flashOn = f.hitFlash > 0 && Math.floor(f.hitFlash / 55) % 2 === 0
 

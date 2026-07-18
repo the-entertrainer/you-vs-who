@@ -18,6 +18,14 @@ export const GRAVITY = 1050
 export const MAX_ENGAGED = 3
 export const ENGAGE_RANGE = 260
 
+// Every hitbox/reach/edge-margin distance below was originally tuned against
+// a 132px-wide sprite. SPRITE_W later shrank for the mobile redesign but
+// these numbers didn't move with it, so attacks landed (or whiffed) at
+// distances that no longer matched what was on screen. Scale them all by
+// the same ratio the sprite itself shrank by.
+const HITBOX_SCALE = SPRITE_W / 132
+const hb = (n: number) => Math.round(n * HITBOX_SCALE)
+
 // "Sent flying" launch physics — the over-the-top payoff for landing a
 // full 3-hit combo finisher. Big horizontal yeet, floaty hang-time arc,
 // fast spin, comedic Matrix-fight-scene energy.
@@ -53,11 +61,11 @@ interface MoveSpec {
   launches?: boolean // sends the defender flying instead of normal hitstun
 }
 
-const JAB: MoveSpec = { clip: 'comboJab', activeFrame: 3, damage: 6, stun: 190, pushback: 10, range: 76 }
-const CROSS: MoveSpec = { clip: 'comboCross', activeFrame: 4, damage: 8, stun: 220, pushback: 14, range: 78 }
-const FINISHER: MoveSpec = { clip: 'comboFinisher', activeFrame: 3, damage: 17, stun: 480, pushback: 46, range: 82, launches: true }
-const AIR_ATTACK: MoveSpec = { clip: 'airAttack', activeFrame: 1, damage: 10, stun: 300, pushback: 24, range: 74 }
-const DASH_ATTACK: MoveSpec = { clip: 'dash', activeFrame: 3, damage: 11, stun: 280, pushback: 30, range: 84 }
+const JAB: MoveSpec = { clip: 'comboJab', activeFrame: 3, damage: 6, stun: 190, pushback: hb(10), range: hb(76) }
+const CROSS: MoveSpec = { clip: 'comboCross', activeFrame: 4, damage: 8, stun: 220, pushback: hb(14), range: hb(78) }
+const FINISHER: MoveSpec = { clip: 'comboFinisher', activeFrame: 3, damage: 17, stun: 480, pushback: hb(46), range: hb(82), launches: true }
+const AIR_ATTACK: MoveSpec = { clip: 'airAttack', activeFrame: 1, damage: 10, stun: 300, pushback: hb(24), range: hb(74) }
+const DASH_ATTACK: MoveSpec = { clip: 'dash', activeFrame: 3, damage: 11, stun: 280, pushback: hb(30), range: hb(84) }
 
 export interface FightEvent {
   type: 'hit' | 'block' | 'ko' | 'finisher' | 'launch'
@@ -224,8 +232,8 @@ export class FightController {
     // Fan the swarm evenly across both sides of the player instead of a
     // linear offset (which clamps most enemies onto the same edge once the
     // spread exceeds the arena bounds — looked like a pile-up, not a mob).
-    const margin = 24
-    const gap = 60 // keep clear space immediately around the player's start
+    const margin = hb(24)
+    const gap = hb(60) // keep clear space immediately around the player's start
     const leftCount = Math.ceil(count / 2)
     const rightCount = count - leftCount
     const leftSpan = Math.max(1, this.player.x - gap - margin)
@@ -297,8 +305,8 @@ export class FightController {
   swipeStrike(f: FighterState, dir: -1 | 1) {
     if (!this.canAct(f) || !f.grounded || this.isBusy(f)) return
     f.facing = dir
-    f.x += dir * 14
-    f.x = Math.max(24, Math.min(ARENA_W - 24, f.x))
+    f.x += dir * hb(14)
+    f.x = Math.max(hb(24), Math.min(ARENA_W - hb(24), f.x))
     this.startMove(f, 'dashAttack')
     f.comboStep = 0
   }
@@ -363,7 +371,7 @@ export class FightController {
 
     if (defender.blocking) {
       defender.x += dir * (move.pushback * 0.35)
-      defender.x = Math.max(24, Math.min(ARENA_W - 24, defender.x))
+      defender.x = Math.max(hb(24), Math.min(ARENA_W - hb(24), defender.x))
       this.events.push({ type: 'block', x: defender.x, y: GROUND_Y - 90, who: defender.isPlayer ? 'player' : defender.id })
       return
     }
@@ -389,7 +397,7 @@ export class FightController {
       this.events.push({ type: 'launch', x: defender.x, y: GROUND_Y - 100, who, damage, attackerName })
     } else {
       defender.x += dir * move.pushback
-      defender.x = Math.max(24, Math.min(ARENA_W - 24, defender.x))
+      defender.x = Math.max(hb(24), Math.min(ARENA_W - hb(24), defender.x))
       defender.anim = 'hit'
       defender.frame = 0
       defender.frameTimer = 0
@@ -427,7 +435,7 @@ export class FightController {
       f.launchVY += LAUNCH_GRAVITY * dt
       f.y += f.launchVY * dt
       f.spinAngle += LAUNCH_SPIN * dt
-      f.x = Math.max(18, Math.min(ARENA_W - 18, f.x))
+      f.x = Math.max(hb(18), Math.min(ARENA_W - hb(18), f.x))
       this.stepAnim(f, dt)
       if (f.y >= GROUND_Y) {
         f.y = GROUND_Y
@@ -513,7 +521,7 @@ export class FightController {
       f.facing = f.moveDir as 1 | -1
       const speed = (WALK_SPEED + (RUN_SPEED - WALK_SPEED) * f.speedRatio) * f.speedMult
       f.x += f.moveDir * speed * dt
-      f.x = Math.max(24, Math.min(ARENA_W - 24, f.x))
+      f.x = Math.max(hb(24), Math.min(ARENA_W - hb(24), f.x))
       f.anim = f.speedRatio > 0.5 ? 'run' : 'walk'
     } else {
       f.anim = 'idle'
@@ -615,7 +623,7 @@ export function runEnemyAI(controller: FightController, ai: FighterState, dt: nu
     // Not their turn to attack yet — drift toward the player slowly so the
     // swarm visibly closes in, without piling on all at once.
     const dist = Math.abs(ai.x - target.x)
-    ai.moveDir = dist > 70 ? (ai.x < target.x ? 1 : -1) : 0
+    ai.moveDir = dist > hb(70) ? (ai.x < target.x ? 1 : -1) : 0
     ai.aiSpeedRatio = 0.15
     ai.wantBlock = false
     controller.move(ai, ai.moveDir, ai.aiSpeedRatio)
@@ -626,7 +634,7 @@ export function runEnemyAI(controller: FightController, ai: FighterState, dt: nu
   const profile = ai.profile
   ai.aiThink -= dt * 1000
   const dist = Math.abs(ai.x - target.x)
-  const strikeRange = 58
+  const strikeRange = hb(58)
 
   if (ai.aiThink <= 0) {
     ai.aiThink = profile.thinkMin + Math.random() * (profile.thinkMax - profile.thinkMin)
@@ -634,12 +642,12 @@ export function runEnemyAI(controller: FightController, ai: FighterState, dt: nu
 
     if (dist > strikeRange) {
       ai.moveDir = ai.x < target.x ? 1 : -1
-      ai.aiSpeedRatio = dist > 140 ? 1 : 0.4
+      ai.aiSpeedRatio = dist > hb(140) ? 1 : 0.4
       ai.wantBlock = false
-      if (ai.grounded && dist < 210 && dist > strikeRange + 12 && Math.random() < profile.dashBias) {
+      if (ai.grounded && dist < hb(210) && dist > strikeRange + hb(12) && Math.random() < profile.dashBias) {
         controller.swipeStrike(ai, ai.x < target.x ? 1 : -1)
       }
-    } else if (dist < strikeRange - 30) {
+    } else if (dist < strikeRange - hb(30)) {
       ai.moveDir = ai.x < target.x ? -1 : 1
       ai.aiSpeedRatio = 0
       ai.wantBlock = false
