@@ -1,262 +1,427 @@
-import type { Character } from './data'
-import { HIT_MESSAGES } from './data'
+import { CLIPS, type AnimName } from './anim'
 
-export const ARENA_W = 240
-export const ARENA_H = 160
-export const GROUND_Y = 132
-export const FIGHTER_W = 22
-export const FIGHTER_H = 40
+export const ARENA_W = 480
+export const ARENA_H = 270
+export const GROUND_Y = 208
+export const SPRITE_W = 132
+export const SPRITE_H = 137
 export const MAX_HEALTH = 100
 
-export type ActionState =
+export const WALK_SPEED = 78
+export const RUN_SPEED = 158
+export const JUMP_VELOCITY = -330
+export const GRAVITY = 900
+
+export type FighterAnim =
   | 'idle'
   | 'walk'
-  | 'punch'
-  | 'grab'
-  | 'special'
+  | 'run'
+  | 'jump'
+  | 'airAttack'
+  | 'comboJab'
+  | 'comboCross'
+  | 'comboFinisher'
+  | 'dashAttack'
+  | 'hit'
   | 'block'
-  | 'hitstun'
-  | 'ko'
-
-export type MoveType = 'punch' | 'grab' | 'special'
+  | 'death'
 
 interface MoveSpec {
-  startup: number
-  active: number
-  recovery: number
-  range: number
+  clip: AnimName
+  activeFrame: number // frame index (0-based) at which the hit lands
   damage: number
+  stun: number // ms of hitstun applied to victim
   pushback: number
-  stun: number
-  breaksBlock: boolean
-  cooldown: number
+  range: number
 }
 
-const MOVES: Record<MoveType, MoveSpec> = {
-  punch: { startup: 90, active: 90, recovery: 160, range: 28, damage: 6, pushback: 6, stun: 260, breaksBlock: false, cooldown: 0 },
-  grab: { startup: 180, active: 120, recovery: 260, range: 24, damage: 11, pushback: 26, stun: 420, breaksBlock: true, cooldown: 0 },
-  special: { startup: 260, active: 160, recovery: 420, range: 46, damage: 16, pushback: 30, stun: 600, breaksBlock: false, cooldown: 2600 },
+const JAB: MoveSpec = { clip: 'comboJab', activeFrame: 3, damage: 5, stun: 220, pushback: 10, range: 76 }
+const CROSS: MoveSpec = { clip: 'comboCross', activeFrame: 4, damage: 7, stun: 260, pushback: 14, range: 78 }
+const FINISHER: MoveSpec = { clip: 'comboFinisher', activeFrame: 3, damage: 15, stun: 520, pushback: 46, range: 82 }
+const AIR_ATTACK: MoveSpec = { clip: 'airAttack', activeFrame: 1, damage: 9, stun: 340, pushback: 24, range: 74 }
+const DASH_ATTACK: MoveSpec = { clip: 'dash', activeFrame: 3, damage: 10, stun: 320, pushback: 30, range: 84 }
+
+export interface FightEvent {
+  type: 'hit' | 'block' | 'ko' | 'finisher'
+  x: number
+  y: number
+  who: 'a' | 'b'
+  damage?: number
 }
 
 export interface FighterState {
-  character: Character
+  side: 'a' | 'b'
   x: number
+  y: number
+  vy: number
+  grounded: boolean
   facing: 1 | -1
   health: number
-  state: ActionState
-  stateTimer: number
-  activeMove: MoveType | null
-  moveTimer: number
-  cooldowns: Record<MoveType, number>
+  anim: FighterAnim
+  frame: number
+  frameTimer: number
+  comboStep: 0 | 1 | 2 | 3
+  chainBuffered: boolean
+  activeMove: MoveSpec | null
+  moveHasHit: boolean
+  hitstunTimer: number
   blocking: boolean
   hitFlash: number
-  bobPhase: number
-  isWinner: boolean
+  winner: boolean
+  dead: boolean
+  moveDir: -1 | 0 | 1
+  wantRun: boolean
+  wantBlock: boolean
 }
 
-export function createFighter(character: Character, x: number, facing: 1 | -1): FighterState {
+function makeFighter(side: 'a' | 'b', x: number, facing: 1 | -1): FighterState {
   return {
-    character,
+    side,
     x,
+    y: GROUND_Y,
+    vy: 0,
+    grounded: true,
     facing,
     health: MAX_HEALTH,
-    state: 'idle',
-    stateTimer: 0,
+    anim: 'idle',
+    frame: 0,
+    frameTimer: 0,
+    comboStep: 0,
+    chainBuffered: false,
     activeMove: null,
-    moveTimer: 0,
-    cooldowns: { punch: 0, grab: 0, special: 0 },
+    moveHasHit: false,
+    hitstunTimer: 0,
     blocking: false,
     hitFlash: 0,
-    bobPhase: Math.random() * Math.PI * 2,
-    isWinner: false,
+    winner: false,
+    dead: false,
+    moveDir: 0,
+    wantRun: false,
+    wantBlock: false,
   }
 }
 
-export interface FightEvent {
-  type: 'hit' | 'block' | 'special' | 'ko'
-  x: number
-  y: number
-  message?: string
+function clipFor(anim: FighterAnim): AnimName {
+  switch (anim) {
+    case 'dashAttack':
+      return 'dash'
+    case 'block':
+      return 'idle'
+    default:
+      return anim as AnimName
+  }
 }
 
 export class FightController {
   a: FighterState
   b: FighterState
-  events: FightEvent[] = []
+  time = 60
   over = false
-  winner: FighterState | null = null
-  timeUp = false
-  timeRemaining = 60
+  events: FightEvent[] = []
 
-  constructor(charA: Character, charB: Character) {
-    this.a = createFighter(charA, 40, 1)
-    this.b = createFighter(charB, ARENA_W - 40 - FIGHTER_W, -1)
+  constructor() {
+    this.a = makeFighter('a', ARENA_W * 0.28, 1)
+    this.b = makeFighter('b', ARENA_W * 0.72, -1)
   }
 
-  canAct(f: FighterState) {
-    return f.state === 'idle' || f.state === 'walk' || f.state === 'block'
+  private isBusy(f: FighterState): boolean {
+    return (
+      f.anim === 'comboJab' ||
+      f.anim === 'comboCross' ||
+      f.anim === 'comboFinisher' ||
+      f.anim === 'airAttack' ||
+      f.anim === 'dashAttack' ||
+      f.anim === 'hit' ||
+      f.anim === 'death'
+    )
   }
 
-  move(f: FighterState, dir: -1 | 0 | 1) {
-    if (!this.canAct(f) || this.over) return
-    if (dir === 0) {
-      if (f.state === 'walk') f.state = 'idle'
+  canAct(f: FighterState): boolean {
+    return !f.dead && !this.over && f.anim !== 'death' && f.anim !== 'hit'
+  }
+
+  private startMove(f: FighterState, anim: FighterAnim) {
+    f.anim = anim
+    f.frame = 0
+    f.frameTimer = 0
+    f.moveHasHit = false
+    f.chainBuffered = false
+  }
+
+  attack(f: FighterState) {
+    if (!this.canAct(f)) return
+    if (!f.grounded) {
+      if (f.anim !== 'airAttack') this.startMove(f, 'airAttack')
       return
     }
-    f.x += dir * 1.6
-    f.x = Math.max(4, Math.min(ARENA_W - FIGHTER_W - 4, f.x))
-    f.state = 'walk'
+    if (f.anim === 'run') {
+      this.startMove(f, 'dashAttack')
+      f.comboStep = 0
+      return
+    }
+    if (this.isBusy(f) && f.anim.startsWith('combo')) {
+      if (f.comboStep < 3) f.chainBuffered = true
+      return
+    }
+    f.comboStep = 1
+    this.startMove(f, 'comboJab')
   }
 
   setBlocking(f: FighterState, on: boolean) {
-    if (this.over) return
-    if (on && this.canAct(f)) {
-      f.blocking = true
-      f.state = 'block'
-    } else if (!on) {
-      f.blocking = false
-      if (f.state === 'block') f.state = 'idle'
+    f.wantBlock = on
+    if (this.canAct(f) && f.grounded && !this.isBusy(f)) {
+      f.blocking = on
+      if (on) {
+        f.anim = 'block'
+        f.frame = 0
+      }
     }
   }
 
-  attack(f: FighterState, move: MoveType) {
-    if (this.over || !this.canAct(f) || f.cooldowns[move] > 0) return false
-    f.blocking = false
-    f.state = move
-    f.activeMove = move
-    f.moveTimer = 0
-    return true
+  jump(f: FighterState) {
+    if (!this.canAct(f) || !f.grounded || this.isBusy(f)) return
+    f.vy = JUMP_VELOCITY
+    f.grounded = false
+    f.anim = 'jump'
+    f.frame = 0
+    f.frameTimer = 0
   }
 
-  private distance() {
-    return Math.abs(this.b.x - this.a.x)
+  move(f: FighterState, dir: -1 | 0 | 1, running: boolean) {
+    f.moveDir = dir
+    f.wantRun = running
+  }
+
+  private moveSpecFor(anim: FighterAnim): MoveSpec | null {
+    if (anim === 'comboJab') return JAB
+    if (anim === 'comboCross') return CROSS
+    if (anim === 'comboFinisher') return FINISHER
+    if (anim === 'airAttack') return AIR_ATTACK
+    if (anim === 'dashAttack') return DASH_ATTACK
+    return null
   }
 
   private resolveHit(attacker: FighterState, defender: FighterState, move: MoveSpec) {
-    const dist = this.distance()
-    if (dist > move.range + FIGHTER_W) return
-    const dir = attacker.x < defender.x ? 1 : -1
-    if (defender.blocking && !move.breaksBlock) {
-      defender.x += dir * (move.pushback * 0.3)
-      defender.health = Math.max(0, defender.health - move.damage * 0.12)
-      defender.hitFlash = 120
-      this.events.push({ type: 'block', x: defender.x, y: GROUND_Y - 20 })
+    const dist = Math.abs(attacker.x - defender.x)
+    if (dist > move.range) return
+    const facingRight = attacker.x < defender.x
+    if ((facingRight && attacker.facing !== 1) || (!facingRight && attacker.facing !== -1)) return
+
+    const dir = facingRight ? 1 : -1
+    if (defender.blocking) {
+      defender.x += dir * (move.pushback * 0.35)
+      defender.x = Math.max(24, Math.min(ARENA_W - 24, defender.x))
+      this.events.push({ type: 'block', x: defender.x, y: GROUND_Y - 90, who: defender.side })
       return
     }
     defender.health = Math.max(0, defender.health - move.damage)
     defender.x += dir * move.pushback
-    defender.x = Math.max(4, Math.min(ARENA_W - FIGHTER_W - 4, defender.x))
-    defender.state = 'hitstun'
-    defender.stateTimer = 0
+    defender.x = Math.max(24, Math.min(ARENA_W - 24, defender.x))
+    defender.anim = 'hit'
+    defender.frame = 0
+    defender.frameTimer = 0
+    defender.hitstunTimer = move.stun
+    defender.hitFlash = 160
     defender.blocking = false
-    defender.hitFlash = 180
-    const msg = HIT_MESSAGES[Math.floor(Math.random() * HIT_MESSAGES.length)]
-    this.events.push({
-      type: move === MOVES.special ? 'special' : 'hit',
-      x: defender.x,
-      y: GROUND_Y - 24,
-      message: msg,
-    })
-    if (defender.health <= 0) {
-      defender.state = 'ko'
-      this.over = true
-      this.winner = attacker
-      attacker.isWinner = true
-      this.events.push({ type: 'ko', x: defender.x, y: GROUND_Y - 30 })
+    defender.comboStep = 0
+    const kind = move.damage >= 12 ? 'finisher' : 'hit'
+    this.events.push({ type: kind, x: defender.x, y: GROUND_Y - 100, who: defender.side, damage: move.damage })
+
+    if (defender.health <= 0 && !defender.dead) {
+      defender.dead = true
+      defender.anim = 'death'
+      defender.frame = 0
+      defender.frameTimer = 0
+      this.events.push({ type: 'ko', x: defender.x, y: GROUND_Y - 100, who: defender.side })
     }
   }
 
   private updateFighter(f: FighterState, dt: number, opponent: FighterState) {
-    for (const k of Object.keys(f.cooldowns) as MoveType[]) {
-      f.cooldowns[k] = Math.max(0, f.cooldowns[k] - dt)
-    }
-    if (f.hitFlash > 0) f.hitFlash = Math.max(0, f.hitFlash - dt)
-    f.facing = f.x < opponent.x ? 1 : -1
-    f.bobPhase += dt * 0.006
+    const dtMs = dt * 1000
 
-    if (f.state === 'punch' || f.state === 'grab' || f.state === 'special') {
-      const move = MOVES[f.state]
-      f.moveTimer += dt
-      if (f.moveTimer >= move.startup && f.moveTimer < move.startup + move.active) {
-        if (f.activeMove) {
-          this.resolveHit(f, opponent, move)
-          f.activeMove = null // only resolve once per swing
+    if (f.hitFlash > 0) f.hitFlash = Math.max(0, f.hitFlash - dtMs)
+
+    if (f.dead) {
+      this.stepAnim(f, dt)
+      return
+    }
+
+    if (f.anim === 'hit') {
+      f.hitstunTimer -= dtMs
+      this.stepAnim(f, dt)
+      if (f.hitstunTimer <= 0) {
+        f.anim = f.grounded ? 'idle' : 'jump'
+        f.frame = 0
+      }
+      return
+    }
+
+    if (!f.grounded) {
+      f.vy += GRAVITY * dt
+      f.y += f.vy * dt
+      if (f.y >= GROUND_Y) {
+        f.y = GROUND_Y
+        f.vy = 0
+        f.grounded = true
+        if (f.anim === 'jump' || f.anim === 'airAttack') f.anim = 'idle'
+      }
+    }
+
+    const activeMove = this.moveSpecFor(f.anim)
+
+    if (activeMove) {
+      if (!f.moveHasHit && f.frame >= activeMove.activeFrame) {
+        f.moveHasHit = true
+        this.resolveHit(f, opponent, activeMove)
+      }
+      this.stepAnim(f, dt)
+      const clip = CLIPS[clipFor(f.anim)]
+      const frameDur = 1 / clip.fps
+      if (f.frame >= clip.frames.length - 1 && f.frameTimer >= frameDur - 1e-6) {
+        if (f.anim === 'comboJab' && f.chainBuffered) {
+          f.comboStep = 2
+          this.startMove(f, 'comboCross')
+        } else if (f.anim === 'comboCross' && f.chainBuffered) {
+          f.comboStep = 3
+          this.startMove(f, 'comboFinisher')
+        } else {
+          f.anim = f.grounded ? 'idle' : 'jump'
+          f.frame = 0
+          f.comboStep = 0
+          f.chainBuffered = false
         }
       }
-      if (f.moveTimer >= move.startup + move.active + move.recovery) {
-        f.cooldowns[f.state as MoveType] = move.cooldown
-        f.state = 'idle'
-        f.moveTimer = 0
-      }
-    } else if (f.state === 'hitstun') {
-      f.stateTimer += dt
-      if (f.stateTimer >= 320) {
-        f.state = 'idle'
-        f.stateTimer = 0
+      return
+    }
+
+    if (!f.grounded) {
+      this.stepAnim(f, dt)
+      return
+    }
+
+    if (f.wantBlock) {
+      f.blocking = true
+      f.anim = 'block'
+      f.frame = 0
+      return
+    }
+    f.blocking = false
+
+    if (f.moveDir !== 0) {
+      f.facing = f.moveDir as 1 | -1
+      const speed = f.wantRun ? RUN_SPEED : WALK_SPEED
+      f.x += f.moveDir * speed * dt
+      f.x = Math.max(24, Math.min(ARENA_W - 24, f.x))
+      f.anim = f.wantRun ? 'run' : 'walk'
+    } else {
+      f.anim = 'idle'
+    }
+    this.stepAnim(f, dt)
+  }
+
+  private stepAnim(f: FighterState, dt: number) {
+    const clip = CLIPS[clipFor(f.anim)]
+    if (!clip || clip.frames.length === 0) return
+    f.frameTimer += dt
+    const frameDur = 1 / clip.fps
+    while (f.frameTimer >= frameDur) {
+      f.frameTimer -= frameDur
+      if (f.frame < clip.frames.length - 1) {
+        f.frame++
+      } else if (clip.loop) {
+        f.frame = 0
+      } else {
+        f.frameTimer = frameDur
+        break
       }
     }
   }
 
   update(dt: number) {
     if (this.over) return
+    this.time -= dt
+    ;[this.a, this.b].forEach((f) => {
+      const other = f === this.a ? this.b : this.a
+      if (f.grounded && !this.isBusy(f) && f.anim !== 'block') {
+        if (f.moveDir === 0) f.facing = f.x < other.x ? 1 : -1
+      }
+    })
+
     this.updateFighter(this.a, dt, this.b)
     this.updateFighter(this.b, dt, this.a)
-    this.timeRemaining -= dt / 1000
-    if (this.timeRemaining <= 0 && !this.over) {
-      this.timeRemaining = 0
-      this.over = true
-      this.timeUp = true
-      this.winner = this.a.health >= this.b.health ? this.a : this.b
-      this.winner.isWinner = true
+
+    if (this.a.dead || this.b.dead || this.time <= 0) {
+      const aDone = this.a.anim === 'death' && this.a.frame >= CLIPS.death.frames.length - 1
+      const bDone = this.b.anim === 'death' && this.b.frame >= CLIPS.death.frames.length - 1
+      if (this.a.dead && this.b.dead) {
+        if (aDone || bDone) this.finish()
+      } else if (this.a.dead) {
+        if (aDone) this.finish()
+      } else if (this.b.dead) {
+        if (bDone) this.finish()
+      } else if (this.time <= 0) {
+        this.finish()
+      }
     }
   }
 
-  drainEvents(): FightEvent[] {
-    const e = this.events
-    this.events = []
-    return e
+  private finish() {
+    this.over = true
+    if (this.a.health > this.b.health) this.a.winner = true
+    else if (this.b.health > this.a.health) this.b.winner = true
   }
 }
 
-export function runAI(controller: FightController, ai: FighterState, target: FighterState, dt: number, memory: { thinkCooldown: number }) {
-  if (controller.over) return
-  memory.thinkCooldown -= dt
-  const dist = Math.abs(target.x - ai.x)
-  const canAct = controller.canAct(ai)
+// ---------------- AI ----------------
+export interface AIMemory {
+  thinkCooldown: number
+  wantChain: boolean
+}
 
-  if (memory.thinkCooldown > 0) {
+export function runAI(controller: FightController, ai: FighterState, target: FighterState, mem: AIMemory, dt: number) {
+  if (!controller.canAct(ai) || controller.over) {
+    ai.moveDir = 0
+    ai.wantBlock = false
     return
   }
-  memory.thinkCooldown = 180 + Math.random() * 220
+  mem.thinkCooldown -= dt * 1000
+  const dist = Math.abs(ai.x - target.x)
+  const strikeRange = 58 // comfortably inside every move's activation range
 
-  if (!canAct) return
+  if (mem.thinkCooldown <= 0) {
+    mem.thinkCooldown = 160 + Math.random() * 220
 
-  const preferredRange = 26
-  if (dist > preferredRange + 6) {
-    controller.move(ai, ai.x < target.x ? 1 : -1)
-    return
-  }
-  if (dist < preferredRange - 14) {
-    controller.move(ai, ai.x < target.x ? -1 : 1)
-    return
-  }
+    const targetBusy = target.anim.startsWith('combo') || target.anim === 'dashAttack' || target.anim === 'airAttack'
 
-  const roll = Math.random()
-  if (target.state === 'punch' || target.state === 'grab' || target.state === 'special') {
-    if (roll < 0.55) {
-      controller.setBlocking(ai, true)
-      return
+    if (dist > strikeRange) {
+      ai.moveDir = ai.x < target.x ? 1 : -1
+      ai.wantRun = dist > 160
+      ai.wantBlock = false
+    } else if (dist < strikeRange - 30) {
+      ai.moveDir = ai.x < target.x ? -1 : 1
+      ai.wantRun = false
+      ai.wantBlock = false
+    } else {
+      ai.moveDir = 0
+      if (targetBusy && Math.random() < 0.35) {
+        ai.wantBlock = true
+      } else {
+        ai.wantBlock = false
+        const roll = Math.random()
+        if (roll < 0.55) {
+          controller.attack(ai)
+          mem.wantChain = Math.random() < 0.7
+        } else if (roll < 0.7 && ai.grounded) {
+          controller.jump(ai)
+        }
+      }
     }
   }
-  controller.setBlocking(ai, false)
 
-  if (roll < 0.12 && ai.cooldowns.special === 0) {
-    controller.attack(ai, 'special')
-  } else if (roll < 0.4) {
-    controller.attack(ai, 'grab')
-  } else if (roll < 0.85) {
-    controller.attack(ai, 'punch')
-  } else {
-    controller.move(ai, 0)
+  if (ai.anim.startsWith('combo') && mem.wantChain) {
+    controller.attack(ai)
   }
+
+  controller.move(ai, ai.moveDir, ai.wantRun)
+  controller.setBlocking(ai, ai.wantBlock)
 }
