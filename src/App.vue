@@ -1,24 +1,25 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, shallowRef } from 'vue'
 import QRCode from 'qrcode'
-import { LOSE_QUOTES, WIN_QUOTES } from './data'
+import { LOSE_QUOTES } from './data'
 import { DEFAULT_PLAYER_ID, DEFAULT_RIVAL_ID } from './characters'
+import { ENEMY_ROSTER, profileForWave } from './enemies'
+import { backdropForWave, getBackdropImage, preloadBackdrops, type Backdrop } from './backdrops'
 import {
   ARENA_H,
   ARENA_W,
   FightController,
-  GROUND_Y,
   runAI,
   type AIMemory,
+  type EnemyProfile,
   type FightEvent,
   type FighterState,
 } from './engine'
 import { drawFighter } from './sprite'
-import { drawOffice } from './arena'
 import { preloadSprites } from './anim'
 import { drawBurst, drawComicText, pickLaunchLine, pickOnomatopoeia } from './comic'
 import { hapticLight, hapticMedium, hapticStrong } from './haptics'
-import { sfxBlock, sfxLose, sfxMenuConfirm, sfxPunch, sfxSpecial, sfxUnlock, sfxWin } from './audio'
+import { sfxBlock, sfxLose, sfxMenuConfirm, sfxPunch, sfxSpecial, sfxUnlock } from './audio'
 
 type Screen = 'desktop-qr' | 'title' | 'fight' | 'results'
 
@@ -68,17 +69,28 @@ const aiMemory = reactive<AIMemory>({ thinkCooldown: 300, wantChain: false, spee
 const BURST_LIFE = 340
 const TEXT_LIFE = 560
 const LAUNCH_TEXT_LIFE = 900
+const WAVE_BANNER_LIFE = 1500
+const NEXT_WAVE_DELAY = 1100 // ms pause after a KO before the next wave spawns in
 const bursts = reactive<{ id: number; x: number; y: number; age: number; life: number; seed: number; big: boolean }[]>([])
 const comicTexts = reactive<{ id: number; x: number; y: number; age: number; life: number; seed: number; text: string; size: number }[]>([])
 let effectId = 0
 let rafId = 0
 let lastTs = 0
 const playerHealth = ref(100)
+const playerMaxHealth = ref(100)
 const opponentHealth = ref(100)
-const timeRemaining = ref(60)
+const opponentMaxHealth = ref(100)
 const comboStep = ref(0)
 let shake = 0
 let slowMoMs = 0
+
+// ---------------- Wave survival state ----------------
+const wave = ref(1)
+const wavesSurvived = ref(0)
+const currentProfile = shallowRef<EnemyProfile>(ENEMY_ROSTER[0])
+const currentBackdrop = shallowRef<Backdrop>(backdropForWave(1))
+let nextWaveTimer = 0
+let pendingNextWave = false
 
 // ---------------- Swipe / tap / hold gesture recognizer ----------------
 // Everything is one full-surface gesture: drag horizontally to walk
@@ -180,21 +192,48 @@ function gestureCancel() {
   window.clearTimeout(holdTimer)
 }
 
-async function startFight() {
-  sfxUnlock()
-  if (!spritesReady.value) await preloadSprites([DEFAULT_PLAYER_ID, DEFAULT_RIVAL_ID]).then(() => (spritesReady.value = true))
-  controller.value = new FightController(DEFAULT_PLAYER_ID, DEFAULT_RIVAL_ID)
-  aiMemory.thinkCooldown = 300
+function applyWave(n: number) {
+  const c = controller.value
+  if (!c) return
+  wave.value = n
+  const profile = profileForWave(n)
+  currentProfile.value = profile
+  currentBackdrop.value = backdropForWave(n)
+  c.startNextWave(profile)
+  aiMemory.thinkCooldown = profile.thinkMin
   aiMemory.wantChain = false
   aiMemory.speedRatio = 0
+  comicTexts.push({
+    id: effectId++,
+    x: ARENA_W / 2,
+    y: 70,
+    age: 0,
+    life: WAVE_BANNER_LIFE,
+    seed: effectId,
+    text: `WAVE ${n}: ${profile.name}`,
+    size: 20,
+  })
+}
+
+async function startFight() {
+  sfxUnlock()
+  if (!spritesReady.value) {
+    await Promise.all([preloadSprites([DEFAULT_PLAYER_ID, DEFAULT_RIVAL_ID]), preloadBackdrops()])
+    spritesReady.value = true
+  }
+  controller.value = new FightController(DEFAULT_PLAYER_ID, DEFAULT_RIVAL_ID, true)
+  wavesSurvived.value = 0
   bursts.length = 0
   comicTexts.length = 0
   shake = 0
   slowMoMs = 0
+  pendingNextWave = false
+  nextWaveTimer = 0
   comboStep.value = 0
   screen.value = 'fight'
   lastTs = 0
   cancelAnimationFrame(rafId)
+  applyWave(1)
   await nextTick()
   if (canvasWrapRef.value) {
     resizeObserver?.disconnect()
@@ -209,13 +248,8 @@ function endFight() {
   cancelAnimationFrame(rafId)
   const c = controller.value
   if (!c) return
-  if (c.a.winner) {
-    sfxWin()
-    hapticStrong()
-  } else {
-    sfxLose()
-    hapticMedium()
-  }
+  sfxLose()
+  hapticMedium()
   screen.value = 'results'
 }
 
@@ -244,7 +278,7 @@ function loop(ts: number) {
   }
   c.move(c.a, dir, speedRatio)
 
-  runAI(c, c.b, c.a, aiMemory, dt)
+  runAI(c, c.b, c.a, aiMemory, dt, currentProfile.value)
   c.update(dt)
   comboStep.value = c.a.comboStep
 
@@ -252,8 +286,18 @@ function loop(ts: number) {
   for (const ev of evs) handleEvent(ev)
 
   playerHealth.value = c.a.health
+  playerMaxHealth.value = c.a.maxHealth
   opponentHealth.value = c.b.health
-  timeRemaining.value = Math.ceil(Math.max(0, c.time))
+  opponentMaxHealth.value = c.b.maxHealth
+
+  if (pendingNextWave) {
+    nextWaveTimer -= realDt * 1000
+    if (nextWaveTimer <= 0) {
+      pendingNextWave = false
+      wavesSurvived.value = wave.value
+      applyWave(wave.value + 1)
+    }
+  }
 
   for (const b of bursts) b.age += realDt * 1000
   while (bursts.length && bursts[0].age > bursts[0].life) bursts.shift()
@@ -293,6 +337,10 @@ function handleEvent(ev: FightEvent) {
     bursts.push({ id: effectId++, x: ev.x, y: ev.y, age: 0, life: BURST_LIFE, seed: effectId, big: false })
     comicTexts.push({ id: effectId++, x: ev.x, y: ev.y - 8, age: 0, life: 1200, seed: effectId, text: 'K.O.!!', size: 30 })
     shake = 16
+    if (ev.who === 'b') {
+      pendingNextWave = true
+      nextWaveTimer = NEXT_WAVE_DELAY
+    }
   }
 }
 
@@ -309,10 +357,16 @@ function render(c: FightController) {
     ctx.translate((Math.random() - 0.5) * shake, (Math.random() - 0.5) * shake)
   }
 
-  drawOffice(ctx)
+  const bg = getBackdropImage(currentBackdrop.value.src)
+  if (bg.complete && bg.naturalWidth > 0) {
+    ctx.drawImage(bg, 0, 0, ARENA_W, ARENA_H)
+  } else {
+    ctx.fillStyle = '#1d1c13'
+    ctx.fillRect(0, 0, ARENA_W, ARENA_H)
+  }
 
   const order: FighterState[] = c.a.x <= c.b.x ? [c.a, c.b] : [c.b, c.a]
-  for (const f of order) drawFighter(ctx, f, f.side === 'a' ? 'p1' : 'p2')
+  for (const f of order) drawFighter(ctx, f)
 
   for (const b of bursts) drawBurst(ctx, b.x, b.y, b.age, b.life, b.seed, b.big)
   for (const t of comicTexts) drawComicText(ctx, t.text, t.x, t.y, t.age, t.life, t.seed, t.size)
@@ -373,22 +427,14 @@ function rematch() {
   startFight()
 }
 
-const resultTitle = computed(() => (controller.value?.a.winner ? 'VICTORY' : 'DEFEATED'))
-const resultSub = computed(() => {
-  const c = controller.value
-  if (!c) return ''
-  if (c.a.dead || c.b.dead) return 'K.O.'
-  return "TIME'S UP"
-})
-const resultQuote = computed(() => {
-  const pool = controller.value?.a.winner ? WIN_QUOTES : LOSE_QUOTES
-  return pool[Math.floor(Math.random() * pool.length)]
-})
+const resultSub = computed(() => `SURVIVED ${wavesSurvived.value} WAVE${wavesSurvived.value === 1 ? '' : 'S'}`)
+const resultDefeatedBy = computed(() => currentProfile.value.name)
+const resultQuote = computed(() => LOSE_QUOTES[Math.floor(Math.random() * LOSE_QUOTES.length)])
 
 onMounted(async () => {
   isMobile.value = detectMobile()
   window.addEventListener('resize', onResize)
-  preloadSprites([DEFAULT_PLAYER_ID, DEFAULT_RIVAL_ID]).then(() => (spritesReady.value = true))
+  Promise.all([preloadSprites([DEFAULT_PLAYER_ID, DEFAULT_RIVAL_ID]), preloadBackdrops()]).then(() => (spritesReady.value = true))
   if (!isMobile.value) {
     screen.value = 'desktop-qr'
     try {
@@ -446,14 +492,14 @@ onBeforeUnmount(() => {
     <div v-else-if="screen === 'title'" class="screen title-screen dither-bg">
       <div class="title-burst"></div>
       <h1 class="title-huge">YOU<br />VS<br />WHO?!</h1>
-      <p class="subtitle">&mdash; AN OFFICE COMBO BRAWLER &mdash;</p>
+      <p class="subtitle">&mdash; ENDLESS OFFICE WAVE BRAWLER &mdash;</p>
       <button class="press-start comic-btn" @click="startFight">PRESS START!</button>
       <p class="instructions wobble-border">
         DRAG to walk, hold the drag to run &middot; TAP to chain a 3-hit combo<br />
         FLICK &larr;&rarr; for a dash strike &middot; FLICK &uarr; to jump (again mid-air to strike)<br />
         PRESS &amp; HOLD still to guard
       </p>
-      <p class="footer-tag">1 CUBICLE &bull; 1 RIVAL &bull; 0 HR COMPLAINTS FILED</p>
+      <p class="footer-tag">MICROMANAGER &bull; REPLY-ALL &bull; MARATHONER &bull; INFLUENCER &bull; THE HERO &mdash; AND THEY KEEP COMING</p>
     </div>
 
     <!-- Fight -->
@@ -470,15 +516,15 @@ onBeforeUnmount(() => {
         <div class="hud-side">
           <span class="hud-name">YOU</span>
           <div class="health-bar wobble-border">
-            <div class="health-fill" :style="{ width: playerHealth + '%', background: playerHealth > 60 ? 'var(--c-green)' : playerHealth > 30 ? 'var(--c-yellow)' : 'var(--c-red)' }"></div>
+            <div class="health-fill" :style="{ width: (playerHealth / playerMaxHealth) * 100 + '%', background: playerHealth / playerMaxHealth > 0.6 ? 'var(--c-green)' : playerHealth / playerMaxHealth > 0.3 ? 'var(--c-yellow)' : 'var(--c-red)' }"></div>
           </div>
           <span v-if="comboStep > 0" class="combo-badge">{{ comboStep }}-HIT!</span>
         </div>
-        <div class="hud-timer wobble-border">{{ timeRemaining }}</div>
+        <div class="hud-timer wobble-border">{{ wave }}</div>
         <div class="hud-side right">
-          <span class="hud-name">RIVAL</span>
+          <span class="hud-name">{{ currentProfile.name }}</span>
           <div class="health-bar wobble-border">
-            <div class="health-fill" :style="{ width: opponentHealth + '%', background: opponentHealth > 60 ? 'var(--c-green)' : opponentHealth > 30 ? 'var(--c-yellow)' : 'var(--c-red)' }"></div>
+            <div class="health-fill" :style="{ width: (opponentHealth / opponentMaxHealth) * 100 + '%', background: opponentHealth / opponentMaxHealth > 0.6 ? 'var(--c-green)' : opponentHealth / opponentMaxHealth > 0.3 ? 'var(--c-yellow)' : 'var(--c-red)' }"></div>
           </div>
         </div>
       </div>
@@ -507,12 +553,13 @@ onBeforeUnmount(() => {
     <div v-else-if="screen === 'results'" class="screen results-screen dither-bg">
       <div class="results-burst"></div>
       <template v-if="controller">
-        <h2 class="results-title" :class="{ lose: !controller.a.winner }">{{ resultTitle }}!!</h2>
+        <h2 class="results-title lose">DEFEATED!!</h2>
         <p class="results-sub">{{ resultSub }}</p>
+        <p class="results-sub">FINISHED OFF BY {{ resultDefeatedBy }}</p>
         <p class="results-quote wobble-border">&ldquo;{{ resultQuote }}&rdquo;</p>
       </template>
       <div class="results-actions">
-        <button class="ready-btn comic-btn" @click="rematch">REMATCH!</button>
+        <button class="ready-btn comic-btn" @click="rematch">TRY AGAIN!</button>
         <button class="secondary-btn comic-btn" @click="goTitle">MAIN MENU</button>
       </div>
     </div>

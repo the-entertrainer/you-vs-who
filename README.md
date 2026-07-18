@@ -1,14 +1,16 @@
 # You vs Who?
 
-**A mobile-first comic-book combo brawler set in an office.**
+**A mobile-first comic-book endless wave brawler set in an office.**
 
-You, a stick-figure office worker, fight a rival across a cubicle floor —
-rendered in a bold, scribbly comic style: Bangers/Kalam lettering, hand-inked
-"boiling line" outlines, halftone dot shading, jagged starburst callouts, and
-screen shake on every hit. Real hand-animated sprite frames (idle, walk, run,
-jump, hit, death, and a 19-frame 3-hit combo string) drive the fight, and
-every control is a swipe/tap/hold gesture — no on-screen buttons. Desktop
-visitors get a handheld-style QR code instead of the game — this is a
+You, a stick-figure office worker, fight off an endless stream of office
+archetypes — one at a time, wave after wave, each with their own fighting
+style — rendered in a bold, scribbly comic style: Bangers/Kalam lettering,
+hand-inked "boiling line" outlines, halftone dot shading, jagged starburst
+callouts, and screen shake on every hit. Real hand-animated sprite frames
+(idle, walk, run, jump, hit, death, and a 19-frame 3-hit combo string) drive
+the fight, five pixel-art office backdrops cycle wave to wave, and every
+control is a swipe/tap/hold gesture — no on-screen buttons. Desktop visitors
+get a handheld-style QR code instead of the game — this is a
 phone-in-your-hand experience.
 
 ## Play
@@ -37,11 +39,35 @@ to a full sprint (no walk/run threshold jump to fight against).
   fight scene-style knockback with hit-stop and a "SENT FLYING!!" callout
 - **Press and hold in place** — guard, reduces damage while held
 
+## Wave survival
+
+There's no roster to pick from — it's always the same stickman, yours, versus
+whoever's next. Enemies cycle through five office archetypes, each a
+recolor of the same fighter with a genuinely different fighting style (not
+just a bigger health bar):
+
+- **The Micromanager** — cautious, blocks a lot, punishes openings
+- **Reply-All** — glass cannon, spams jabs relentlessly, rarely blocks
+- **The Marathoner** — constantly moving, leans hard on dash strikes
+- **The Influencer** — lives in the air, favors jump-ins and air strikes
+- **The Hero (of their own story)** — the toughest, aggressive finishers
+
+The roster loops forever, getting tougher (more health, more damage) every
+lap. Your own health carries over between waves — there's no healing between
+fights, just survival. The backdrop changes every wave too, cycling through
+five hand-picked pixel-art office scenes (daytime bullpen, a rainy noir
+graveyard shift, a neon cyberpunk server room, a breaking-news newsroom, and
+an 80s arcade break room).
+
 ## Features
 
-- Fast, punchy pacing: quick movement, snappy animation, and an AI rival
-  that closes distance with dash strikes, contests the air with jump-ins,
-  blocks reactively, and commits hard to finishing combos
+- Endless wave mode: one opponent at a time, health persists between waves,
+  a wave-intro banner announces each new enemy's name, and the run only
+  ends when you go down
+- Five distinct AI fighting styles from one shared moveset — dash-strike
+  spam, air-strike spam, jab spam, defensive blocking, aggressive
+  finishing — tuned via a per-enemy profile (`src/enemies.ts`)
+- Fast, punchy pacing: quick movement, snappy animation
 - A signature "sent flying" finisher: landing the full 3-hit combo launches
   the opponent into a spinning aerial ragdoll with a brief slow-mo hit-stop,
   a bigger screen shake, and an absurd comic callout — the payoff move
@@ -56,9 +82,7 @@ to a full sprint (no walk/run threshold jump to fight against).
 - Directional-aware combos: the same tap/flick input resolves to a
   different move (combo string / dash strike / air strike) depending on
   how you're moving when you throw it
-- A hand-drawn, hand-inked office arena — cubicle partitions, windows,
-  desks with monitors, a water cooler, a potted plant — rendered on
-  `<canvas>`
+- Five pixel-art office backdrops, one per wave on rotation
 - A character roster registry (`src/characters.ts`) and per-character
   sprite loading (`src/anim.ts`'s `getClips(characterId)`) ready to grow
   past the one fighter — drop a new sprite pack in `src/assets/<id>/`
@@ -70,27 +94,30 @@ to a full sprint (no walk/run threshold jump to fight against).
 ## Tech stack
 
 - Vue 3 + TypeScript + Vite
-- Hand-rolled `<canvas>` renderer (`src/sprite.ts`, `src/arena.ts`,
-  `src/comic.ts`) and fight simulation (`src/engine.ts`) — no game engine
+- Hand-rolled `<canvas>` renderer (`src/sprite.ts`, `src/comic.ts`) and
+  fight simulation (`src/engine.ts`) — no game engine
 - `qrcode` for the desktop QR screen
 
 ## Project layout
 
 - `src/App.vue` — screen state machine (title → fight → results), the
-  swipe/tap/hold gesture recognizer, HUD, and the requestAnimationFrame
-  game loop
+  swipe/tap/hold gesture recognizer, wave transitions, HUD, and the
+  requestAnimationFrame game loop
 - `src/engine.ts` — fight simulation: fighter state, combo/move
-  resolution, launch/ragdoll physics, hit/block/KO logic, and the AI
-  opponent
+  resolution, launch/ragdoll physics, hit/block/KO logic, endless-mode
+  wave transitions, and the enemy-profile-driven AI
+- `src/enemies.ts` — the five enemy archetype profiles and per-wave
+  difficulty scaling
+- `src/backdrops.ts` — the five pixel-art office backdrops, one per wave
 - `src/characters.ts` — character roster registry (id → sprite folder)
 - `src/anim.ts` — per-character sprite frame manifest, clip definitions,
   and preloading
-- `src/sprite.ts` — canvas sprite renderer (frame drawing, per-side tint,
-  hit flash, ground shadow, launch spin rotation)
-- `src/arena.ts` — hand-drawn, hand-inked office backdrop
+- `src/sprite.ts` — canvas sprite renderer (frame drawing, per-fighter
+  tint, hit flash, ground shadow, launch spin rotation)
 - `src/comic.ts` — starburst + onomatopoeia hit-effect renderer
 - `src/assets/fighter/` — cropped sprite frames (CC0, see credit below)
-- `src/data.ts` — hit-flavor text and win/lose quotes
+- `src/assets/backdrops/` — the five office backdrop images
+- `src/data.ts` — lose-screen flavor quotes
 
 ## Sprite credit
 

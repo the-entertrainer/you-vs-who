@@ -23,7 +23,7 @@ tintCanvas.width = SPRITE_W
 tintCanvas.height = SPRITE_H
 const tintCtx = tintCanvas.getContext('2d')!
 
-export function drawFighter(ctx: CanvasRenderingContext2D, f: FighterState, tint: 'p1' | 'p2') {
+export function drawFighter(ctx: CanvasRenderingContext2D, f: FighterState) {
   const clip = getClips(f.characterId)[clipFor(f.anim)]
   const src = clip.frames[Math.min(f.frame, clip.frames.length - 1)]
   if (!src) return
@@ -55,7 +55,7 @@ export function drawFighter(ctx: CanvasRenderingContext2D, f: FighterState, tint
   tintCtx.drawImage(img, 0, 0, SPRITE_W, SPRITE_H)
   tintCtx.filter = 'none'
   tintCtx.globalCompositeOperation = 'source-atop'
-  tintCtx.fillStyle = flashOn ? '#ffffff' : tint === 'p1' ? 'rgba(46, 94, 158, 0.5)' : 'rgba(198, 42, 32, 0.5)'
+  tintCtx.fillStyle = flashOn ? '#ffffff' : f.tint
   tintCtx.fillRect(0, 0, SPRITE_W, SPRITE_H)
   tintCtx.globalCompositeOperation = 'source-over'
 

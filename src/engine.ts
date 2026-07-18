@@ -20,6 +20,8 @@ export const LAUNCH_VY = -320
 export const LAUNCH_GRAVITY = 620
 export const LAUNCH_SPIN = 18 // radians/sec
 
+export const PLAYER_TINT = 'rgba(46, 94, 158, 0.5)'
+
 export type FighterAnim =
   | 'idle'
   | 'walk'
@@ -59,9 +61,50 @@ export interface FightEvent {
   damage?: number
 }
 
+// Enemy archetype: same stickman, different paint job and fighting style.
+// aggression/dashBias/airBias/blockBias/chainBias tune the AI's decision
+// probabilities so each type genuinely fights differently, not just "harder".
+export interface EnemyProfile {
+  id: string
+  name: string
+  tint: string
+  tagline: string
+  healthMult: number
+  dmgMult: number
+  speedMult: number
+  aggression: number
+  dashBias: number
+  airBias: number
+  blockBias: number
+  chainBias: number
+  thinkMin: number
+  thinkMax: number
+}
+
+export const DEFAULT_AI_PROFILE: EnemyProfile = {
+  id: 'default',
+  name: 'RIVAL',
+  tint: 'rgba(198, 42, 32, 0.5)',
+  tagline: '',
+  healthMult: 1,
+  dmgMult: 1,
+  speedMult: 1,
+  aggression: 0.65,
+  dashBias: 0.3,
+  airBias: 0.6,
+  blockBias: 0.4,
+  chainBias: 0.85,
+  thinkMin: 90,
+  thinkMax: 220,
+}
+
 export interface FighterState {
   side: 'a' | 'b'
   characterId: string
+  tint: string
+  maxHealth: number
+  dmgMult: number
+  speedMult: number
   x: number
   y: number
   vy: number
@@ -88,16 +131,29 @@ export interface FighterState {
   launchVY: number
 }
 
-function makeFighter(side: 'a' | 'b', x: number, facing: 1 | -1, characterId: string): FighterState {
+function makeFighter(
+  side: 'a' | 'b',
+  x: number,
+  facing: 1 | -1,
+  characterId: string,
+  tint: string,
+  maxHealth: number = MAX_HEALTH,
+  dmgMult = 1,
+  speedMult = 1,
+): FighterState {
   return {
     side,
     characterId,
+    tint,
+    maxHealth,
+    dmgMult,
+    speedMult,
     x,
     y: GROUND_Y,
     vy: 0,
     grounded: true,
     facing,
-    health: MAX_HEALTH,
+    health: maxHealth,
     anim: 'idle',
     frame: 0,
     frameTimer: 0,
@@ -138,10 +194,27 @@ export class FightController {
   time = 60
   over = false
   events: FightEvent[] = []
+  endlessMode: boolean
 
-  constructor(playerCharacterId: string = DEFAULT_CHARACTER, rivalCharacterId: string = DEFAULT_CHARACTER) {
-    this.a = makeFighter('a', ARENA_W * 0.28, 1, playerCharacterId)
-    this.b = makeFighter('b', ARENA_W * 0.72, -1, rivalCharacterId)
+  constructor(playerCharacterId: string = DEFAULT_CHARACTER, rivalCharacterId: string = DEFAULT_CHARACTER, endlessMode = false) {
+    this.endlessMode = endlessMode
+    this.a = makeFighter('a', ARENA_W * 0.28, 1, playerCharacterId, PLAYER_TINT)
+    this.b = makeFighter('b', ARENA_W * 0.72, -1, rivalCharacterId, DEFAULT_AI_PROFILE.tint)
+  }
+
+  /** Endless/wave mode: swap in a fresh enemy for the next wave, keeping the player's own health/position intact. */
+  startNextWave(profile: EnemyProfile) {
+    const maxHealth = Math.round(MAX_HEALTH * profile.healthMult)
+    this.b = makeFighter('b', ARENA_W * 0.72, -1, this.b.characterId, profile.tint, maxHealth, profile.dmgMult, profile.speedMult)
+    this.a.x = ARENA_W * 0.28
+    this.a.facing = 1
+    this.a.blocking = false
+    this.a.wantBlock = false
+    this.a.comboStep = 0
+    if (this.a.anim !== 'death' && this.a.anim !== 'launched') {
+      this.a.anim = 'idle'
+      this.a.frame = 0
+    }
   }
 
   private isBusy(f: FighterState): boolean {
@@ -234,6 +307,7 @@ export class FightController {
   }
 
   private resolveHit(attacker: FighterState, defender: FighterState, move: MoveSpec) {
+    if (defender.dead) return // already finished — don't let a late-landing hit reset the death anim
     const dist = Math.abs(attacker.x - defender.x)
     if (dist > move.range) return
     const facingRight = attacker.x < defender.x
@@ -247,7 +321,8 @@ export class FightController {
       return
     }
 
-    defender.health = Math.max(0, defender.health - move.damage)
+    const damage = Math.round(move.damage * attacker.dmgMult)
+    defender.health = Math.max(0, defender.health - damage)
     defender.blocking = false
     defender.comboStep = 0
     defender.hitFlash = 160
@@ -260,7 +335,7 @@ export class FightController {
       defender.spinAngle = 0
       defender.launchVX = dir * LAUNCH_VX
       defender.launchVY = LAUNCH_VY
-      this.events.push({ type: 'launch', x: defender.x, y: GROUND_Y - 100, who: defender.side, damage: move.damage })
+      this.events.push({ type: 'launch', x: defender.x, y: GROUND_Y - 100, who: defender.side, damage })
     } else {
       defender.x += dir * move.pushback
       defender.x = Math.max(24, Math.min(ARENA_W - 24, defender.x))
@@ -268,8 +343,8 @@ export class FightController {
       defender.frame = 0
       defender.frameTimer = 0
       defender.hitstunTimer = move.stun
-      const kind = move.damage >= 12 ? 'finisher' : 'hit'
-      this.events.push({ type: kind, x: defender.x, y: GROUND_Y - 100, who: defender.side, damage: move.damage })
+      const kind = damage >= 12 ? 'finisher' : 'hit'
+      this.events.push({ type: kind, x: defender.x, y: GROUND_Y - 100, who: defender.side, damage })
     }
 
     if (defender.health <= 0 && !defender.dead) {
@@ -384,7 +459,7 @@ export class FightController {
 
     if (f.moveDir !== 0) {
       f.facing = f.moveDir as 1 | -1
-      const speed = WALK_SPEED + (RUN_SPEED - WALK_SPEED) * f.speedRatio
+      const speed = (WALK_SPEED + (RUN_SPEED - WALK_SPEED) * f.speedRatio) * f.speedMult
       f.x += f.moveDir * speed * dt
       f.x = Math.max(24, Math.min(ARENA_W - 24, f.x))
       f.anim = f.speedRatio > 0.5 ? 'run' : 'walk'
@@ -425,8 +500,16 @@ export class FightController {
     this.updateFighter(this.a, dt, this.b)
     this.updateFighter(this.b, dt, this.a)
 
+    const aDone = this.a.anim === 'death' && this.a.frame >= CLIPS.death.frames.length - 1
+
+    if (this.endlessMode) {
+      // Only the player's death ends an endless run — a defeated enemy just
+      // sits there until App.vue calls startNextWave() for the next one.
+      if (this.a.dead && aDone) this.finish()
+      return
+    }
+
     if (this.a.dead || this.b.dead || this.time <= 0) {
-      const aDone = this.a.anim === 'death' && this.a.frame >= CLIPS.death.frames.length - 1
       const bDone = this.b.anim === 'death' && this.b.frame >= CLIPS.death.frames.length - 1
       if (this.a.dead && this.b.dead) {
         if (aDone || bDone) this.finish()
@@ -458,18 +541,25 @@ export class FightController {
 //                          distance aggressively or punish whiffs
 //   - Air Strike            aerial attack, used to contest jump-ins or start
 //                          offense from above
-// The AI mixes all four with tuned probabilities below so it feels like an
-// actual opponent rather than a heavy bag: it closes distance with dash
-// strikes, contests neutral with jumps into air strikes, blocks reactively
-// when the player is mid-combo, and commits hard to finishing chains once
-// it starts one.
+// Every EnemyProfile (see profiles above) tunes how much an opponent leans
+// on each category — a "Marathoner" dash-strikes constantly, an
+// "Influencer" lives in the air, "Reply-All" never stops chaining jabs —
+// so each enemy type genuinely fights differently, not just with a bigger
+// health bar.
 export interface AIMemory {
   thinkCooldown: number
   wantChain: boolean
   speedRatio: number
 }
 
-export function runAI(controller: FightController, ai: FighterState, target: FighterState, mem: AIMemory, dt: number) {
+export function runAI(
+  controller: FightController,
+  ai: FighterState,
+  target: FighterState,
+  mem: AIMemory,
+  dt: number,
+  profile: EnemyProfile = DEFAULT_AI_PROFILE,
+) {
   if (!controller.canAct(ai) || controller.over) {
     ai.moveDir = 0
     ai.wantBlock = false
@@ -480,7 +570,7 @@ export function runAI(controller: FightController, ai: FighterState, target: Fig
   const strikeRange = 58 // comfortably inside every move's activation range
 
   if (mem.thinkCooldown <= 0) {
-    mem.thinkCooldown = 90 + Math.random() * 130
+    mem.thinkCooldown = profile.thinkMin + Math.random() * (profile.thinkMax - profile.thinkMin)
 
     const targetBusy = target.anim.startsWith('combo') || target.anim === 'dashAttack' || target.anim === 'airAttack'
 
@@ -488,7 +578,7 @@ export function runAI(controller: FightController, ai: FighterState, target: Fig
       ai.moveDir = ai.x < target.x ? 1 : -1
       mem.speedRatio = dist > 140 ? 1 : 0.4
       ai.wantBlock = false
-      if (ai.grounded && dist < 210 && dist > strikeRange + 12 && Math.random() < 0.3) {
+      if (ai.grounded && dist < 210 && dist > strikeRange + 12 && Math.random() < profile.dashBias) {
         controller.swipeStrike(ai, ai.x < target.x ? 1 : -1)
       }
     } else if (dist < strikeRange - 30) {
@@ -497,17 +587,17 @@ export function runAI(controller: FightController, ai: FighterState, target: Fig
       ai.wantBlock = false
     } else {
       ai.moveDir = 0
-      if (targetBusy && Math.random() < 0.4) {
+      if (targetBusy && Math.random() < profile.blockBias) {
         ai.wantBlock = true
       } else {
         ai.wantBlock = false
         const roll = Math.random()
-        if (roll < 0.65) {
+        if (roll < profile.aggression) {
           controller.attack(ai)
-          mem.wantChain = Math.random() < 0.85
-        } else if (roll < 0.82 && ai.grounded) {
+          mem.wantChain = Math.random() < profile.chainBias
+        } else if (roll < profile.aggression + 0.17 && ai.grounded) {
           controller.jump(ai)
-          if (Math.random() < 0.6) controller.attack(ai) // follow up with an air strike
+          if (Math.random() < profile.airBias) controller.attack(ai) // follow up with an air strike
         }
       }
     }
