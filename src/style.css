@@ -1,0 +1,79 @@
+:root {
+  --c-surface: #fef9eb;
+  --c-surface-dim: #dedacc;
+  --c-surface-container-lowest: #ffffff;
+  --c-surface-container-low: #f8f3e5;
+  --c-surface-container: #f2eee0;
+  --c-surface-container-high: #ede8da;
+  --c-surface-container-highest: #e7e2d5;
+  --c-on-surface: #1d1c13;
+  --c-on-surface-variant: #42474d;
+  --c-outline: #73777e;
+  --c-outline-variant: #c2c7ce;
+  --c-primary: #0f3651;
+  --c-on-primary: #ffffff;
+  --c-primary-container: #2a4d69;
+  --c-secondary: #b62515;
+  --c-secondary-container: #fc5841;
+  --c-tertiary: #2a3900;
+  --c-tertiary-container: #3e5100;
+  --c-tertiary-fixed: #cbf164;
+  --c-tertiary-fixed-dim: #afd44b;
+  --c-error: #ba1a1a;
+  --c-background: #fef9eb;
+  --c-ink: #000000;
+
+  --font-headline: 'Space Mono', monospace;
+  --font-body: 'JetBrains Mono', monospace;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html, body {
+  margin: 0;
+  padding: 0;
+  width: 100%;
+  height: 100%;
+  background: var(--c-background);
+  color: var(--c-on-surface);
+  font-family: var(--font-body);
+  overscroll-behavior: none;
+  -webkit-tap-highlight-color: transparent;
+  -webkit-user-select: none;
+  user-select: none;
+  text-rendering: optimizeSpeed;
+}
+
+#app {
+  width: 100%;
+  height: 100%;
+  min-height: 100dvh;
+}
+
+button {
+  font-family: var(--font-headline);
+  cursor: pointer;
+  touch-action: manipulation;
+}
+
+img, canvas {
+  image-rendering: pixelated;
+  image-rendering: -moz-crisp-edges;
+  image-rendering: crisp-edges;
+}
+
+.scanlines {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: linear-gradient(rgba(0, 0, 0, 0) 50%, rgba(0, 0, 0, 0.08) 50%);
+  background-size: 100% 4px;
+  z-index: 50;
+}
+
+.dither-bg {
+  background-image: radial-gradient(var(--c-outline-variant) 1px, transparent 0);
+  background-size: 3px 3px;
+}
