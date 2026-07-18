@@ -221,12 +221,30 @@ export class FightController {
   /** Spawns the whole swarm at once, spread across both sides of the player. */
   spawnSwarm(count: number, profiles: EnemyProfile[], characterId: string) {
     this.enemies = []
+    // Fan the swarm evenly across both sides of the player instead of a
+    // linear offset (which clamps most enemies onto the same edge once the
+    // spread exceeds the arena bounds — looked like a pile-up, not a mob).
+    const margin = 24
+    const gap = 60 // keep clear space immediately around the player's start
+    const leftCount = Math.ceil(count / 2)
+    const rightCount = count - leftCount
+    const leftSpan = Math.max(1, this.player.x - gap - margin)
+    const rightSpan = Math.max(1, ARENA_W - margin - (this.player.x + gap))
+
     for (let i = 0; i < count; i++) {
       const profile = profiles[i % profiles.length]
-      const side = i % 2 === 0 ? -1 : 1
-      const spread = 90 + Math.floor(i / 2) * 62 + Math.random() * 30
-      const x = Math.max(24, Math.min(ARENA_W - 24, this.player.x + side * spread))
-      const e = makeFighter(false, x, side > 0 ? -1 : 1, characterId, profile.tint, profile, Math.round(MAX_HEALTH * profile.healthMult), profile.dmgMult, profile.speedMult)
+      const onLeft = i % 2 === 0
+      let x: number
+      if (onLeft) {
+        const slot = Math.floor(i / 2)
+        x = margin + (leftSpan * (slot + 0.5)) / leftCount + (Math.random() - 0.5) * 20
+      } else {
+        const slot = Math.floor(i / 2)
+        x = this.player.x + gap + (rightSpan * (slot + 0.5)) / rightCount + (Math.random() - 0.5) * 20
+      }
+      x = Math.max(margin, Math.min(ARENA_W - margin, x))
+      const facing = x < this.player.x ? 1 : -1
+      const e = makeFighter(false, x, facing, characterId, profile.tint, profile, Math.round(MAX_HEALTH * profile.healthMult), profile.dmgMult, profile.speedMult)
       this.enemies.push(e)
     }
   }
