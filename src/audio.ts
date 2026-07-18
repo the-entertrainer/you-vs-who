@@ -73,6 +73,11 @@ export function sfxBlock() {
   playTone({ freq: 500, duration: 0.05, type: 'triangle', gain: 0.06 })
 }
 
+export function sfxPowerUp() {
+  const notes = [440, 660, 880]
+  notes.forEach((f, i) => setTimeout(() => playTone({ freq: f, duration: 0.09, type: 'triangle', gain: 0.08 }), i * 55))
+}
+
 export function sfxWin() {
   const notes = [523, 659, 784, 1046]
   notes.forEach((f, i) => setTimeout(() => playTone({ freq: f, duration: 0.18, type: 'square', gain: 0.08 }), i * 110))

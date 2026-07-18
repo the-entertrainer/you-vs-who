@@ -44,6 +44,9 @@ export type FighterAnim =
   | 'comboCross'
   | 'comboFinisher'
   | 'dashAttack'
+  | 'slideKick'
+  | 'leapfrog'
+  | 'leapfrogLand'
   | 'hit'
   | 'block'
   | 'death'
@@ -57,6 +60,7 @@ interface MoveSpec {
   pushback: number
   range: number
   launches?: boolean // sends the defender flying instead of normal hitstun
+  unblockable?: boolean // low/surprise hit that guard can't stop — a mix-up threat
 }
 
 const JAB: MoveSpec = { clip: 'comboJab', activeFrame: 3, damage: 6, stun: 190, pushback: hb(10), range: hb(76) }
@@ -64,14 +68,27 @@ const CROSS: MoveSpec = { clip: 'comboCross', activeFrame: 4, damage: 8, stun: 2
 const FINISHER: MoveSpec = { clip: 'comboFinisher', activeFrame: 3, damage: 17, stun: 480, pushback: hb(46), range: hb(82), launches: true }
 const AIR_ATTACK: MoveSpec = { clip: 'airAttack', activeFrame: 1, damage: 10, stun: 300, pushback: hb(24), range: hb(74) }
 const DASH_ATTACK: MoveSpec = { clip: 'dash', activeFrame: 3, damage: 11, stun: 280, pushback: hb(30), range: hb(84) }
+// Power-up-only moves — free until picked up, then a single-use "wow" swing.
+const SLIDE_KICK: MoveSpec = { clip: 'slide', activeFrame: 3, damage: 14, stun: 300, pushback: hb(24), range: hb(72), unblockable: true }
+
+export type PowerUpKind = 'slide' | 'leapfrog'
+
+export interface PowerUpState {
+  id: string
+  kind: PowerUpKind
+  x: number
+  y: number
+  taken?: boolean
+}
 
 export interface FightEvent {
-  type: 'hit' | 'block' | 'ko' | 'finisher' | 'launch'
+  type: 'hit' | 'block' | 'ko' | 'finisher' | 'launch' | 'powerup'
   x: number
   y: number
   who: 'player' | string // 'player' or the opponent's id
   damage?: number
   attackerName?: string // set when the opponent is the attacker, for "defeated by" attribution
+  powerUpKind?: PowerUpKind
 }
 
 // Rival archetype: same stickman, different fighting style — a Tekken/MK
@@ -140,6 +157,13 @@ export interface FighterState {
   launchVX: number
   launchVY: number
   lastHitBy?: string
+  // Power-ups picked up off the ground — each is a single free use of a
+  // move the sprite pack otherwise never uses in the base moveset.
+  hasSlideCharge: boolean
+  hasLeapfrogCharge: boolean
+  leapfrogFromX: number
+  leapfrogToX: number
+  leapfrogElapsed: number
   // AI bookkeeping (opponent only)
   aiThink: number
   aiWantChain: boolean
@@ -190,6 +214,11 @@ function makeFighter(
     spinAngle: 0,
     launchVX: 0,
     launchVY: 0,
+    hasSlideCharge: false,
+    hasLeapfrogCharge: false,
+    leapfrogFromX: 0,
+    leapfrogToX: 0,
+    leapfrogElapsed: 0,
     aiThink: 0,
     aiWantChain: false,
     aiSpeedRatio: 0,
@@ -200,6 +229,12 @@ function clipFor(anim: FighterAnim): AnimName {
   switch (anim) {
     case 'dashAttack':
       return 'dash'
+    case 'slideKick':
+      return 'slide'
+    case 'leapfrog':
+      return 'climb'
+    case 'leapfrogLand':
+      return 'wallslide'
     case 'block':
       return 'idle'
     case 'launched':
@@ -208,6 +243,9 @@ function clipFor(anim: FighterAnim): AnimName {
       return anim as AnimName
   }
 }
+
+const LEAPFROG_DURATION = 0.46 // seconds in the air
+const LEAPFROG_ARC_HEIGHT = hb(95)
 
 /** One best-of-3 duel round: a player and a single AI opponent, Tekken/MK style. */
 export class FightController {
@@ -218,6 +256,9 @@ export class FightController {
   draw = false // round timed out tied, or a simultaneous double-KO
   roundTime = ROUND_TIME
   events: FightEvent[] = []
+  powerUps: PowerUpState[] = []
+  private powerUpTimer = 5 + Math.random() * 3
+  private nextPowerUpId = 0
 
   constructor(playerCharacterId: string = DEFAULT_CHARACTER, opponentProfile: EnemyProfile = DEFAULT_AI_PROFILE, opponentCharacterId: string = DEFAULT_CHARACTER) {
     this.player = makeFighter(true, ARENA_W * 0.32, 1, playerCharacterId, PLAYER_TINT)
@@ -241,6 +282,9 @@ export class FightController {
       f.anim === 'comboFinisher' ||
       f.anim === 'airAttack' ||
       f.anim === 'dashAttack' ||
+      f.anim === 'slideKick' ||
+      f.anim === 'leapfrog' ||
+      f.anim === 'leapfrogLand' ||
       f.anim === 'hit' ||
       f.anim === 'death' ||
       f.anim === 'launched'
@@ -288,6 +332,29 @@ export class FightController {
     f.comboStep = 0
   }
 
+  /** Power-up move: a low, unblockable lunging kick. Consumes the charge. */
+  slideKick(f: FighterState) {
+    if (!this.canAct(f) || !f.grounded || this.isBusy(f) || !f.hasSlideCharge) return
+    f.hasSlideCharge = false
+    f.x += f.facing * hb(28)
+    f.x = Math.max(hb(24), Math.min(ARENA_W - hb(24), f.x))
+    this.startMove(f, 'slideKick')
+    f.comboStep = 0
+  }
+
+  /** Power-up move: vaults clean over the opponent to the far side. Pure repositioning — no damage. */
+  leapfrog(f: FighterState) {
+    if (!this.canAct(f) || !f.grounded || this.isBusy(f) || !f.hasLeapfrogCharge) return
+    const target = f.isPlayer ? this.opponent : this.player
+    f.hasLeapfrogCharge = false
+    f.leapfrogFromX = f.x
+    const landSide = f.x < target.x ? 1 : -1
+    f.leapfrogToX = Math.max(hb(24), Math.min(ARENA_W - hb(24), target.x + landSide * hb(46)))
+    f.leapfrogElapsed = 0
+    f.grounded = false
+    this.startMove(f, 'leapfrog')
+  }
+
   setBlocking(f: FighterState, on: boolean) {
     f.wantBlock = on
     if (this.canAct(f) && f.grounded && !this.isBusy(f)) {
@@ -320,6 +387,7 @@ export class FightController {
     if (anim === 'comboFinisher') return FINISHER
     if (anim === 'airAttack') return AIR_ATTACK
     if (anim === 'dashAttack') return DASH_ATTACK
+    if (anim === 'slideKick') return SLIDE_KICK
     return null
   }
 
@@ -338,7 +406,7 @@ export class FightController {
 
     const dir = attacker.x < defender.x ? 1 : -1
 
-    if (defender.blocking) {
+    if (defender.blocking && !move.unblockable) {
       defender.x += dir * (move.pushback * 0.35)
       defender.x = Math.max(hb(24), Math.min(ARENA_W - hb(24), defender.x))
       this.events.push({ type: 'block', x: defender.x, y: GROUND_Y - 90, who: defender.isPlayer ? 'player' : defender.id })
@@ -434,6 +502,31 @@ export class FightController {
       return
     }
 
+    if (f.anim === 'leapfrog') {
+      f.leapfrogElapsed += dt
+      const t = Math.min(1, f.leapfrogElapsed / LEAPFROG_DURATION)
+      f.x = f.leapfrogFromX + (f.leapfrogToX - f.leapfrogFromX) * t
+      f.y = GROUND_Y - Math.sin(t * Math.PI) * LEAPFROG_ARC_HEIGHT
+      this.stepAnim(f, dt)
+      if (t >= 1) {
+        f.y = GROUND_Y
+        f.grounded = true
+        this.startMove(f, 'leapfrogLand')
+      }
+      return
+    }
+
+    if (f.anim === 'leapfrogLand') {
+      this.stepAnim(f, dt)
+      const clip = CLIPS[clipFor(f.anim)]
+      const frameDur = 1 / clip.fps
+      if (f.frame >= clip.frames.length - 1 && f.frameTimer >= frameDur - 1e-6) {
+        f.anim = 'idle'
+        f.frame = 0
+      }
+      return
+    }
+
     if (!f.grounded) {
       f.vy += GRAVITY * dt
       f.y += f.vy * dt
@@ -514,11 +607,39 @@ export class FightController {
     }
   }
 
+  /** Spawns a power-up on the ground every so often, one at a time, and
+   * grants its charge to whichever fighter (player or AI) walks over it. */
+  private updatePowerUps(dt: number) {
+    if (this.powerUps.length === 0) {
+      this.powerUpTimer -= dt
+      if (this.powerUpTimer <= 0) {
+        this.powerUpTimer = 11 + Math.random() * 7
+        const kind: PowerUpKind = Math.random() < 0.5 ? 'slide' : 'leapfrog'
+        const margin = hb(90)
+        const x = margin + Math.random() * (ARENA_W - margin * 2)
+        this.powerUps.push({ id: `pu${this.nextPowerUpId++}`, kind, x, y: GROUND_Y })
+      }
+    }
+
+    for (const p of this.powerUps) {
+      for (const f of [this.player, this.opponent]) {
+        if (f.dead || !f.grounded || this.isBusy(f)) continue
+        if (Math.abs(f.x - p.x) > hb(34)) continue
+        if (p.kind === 'slide') f.hasSlideCharge = true
+        else f.hasLeapfrogCharge = true
+        this.events.push({ type: 'powerup', x: p.x, y: GROUND_Y - 70, who: f.isPlayer ? 'player' : f.id, powerUpKind: p.kind })
+        p.taken = true
+      }
+    }
+    if (this.powerUps.some((p) => p.taken)) this.powerUps = this.powerUps.filter((p) => !p.taken)
+  }
+
   update(dt: number) {
     if (this.over) return
 
     this.updateFighter(this.player, dt)
     this.updateFighter(this.opponent, dt)
+    this.updatePowerUps(dt)
 
     // Classic 1v1 fighters always turn to face their opponent — movement
     // doesn't override it (you can walk backward while still facing them).
@@ -596,6 +717,14 @@ export function runEnemyAI(controller: FightController, ai: FighterState, dt: nu
   if (ai.aiThink <= 0) {
     ai.aiThink = profile.thinkMin + Math.random() * (profile.thinkMax - profile.thinkMin)
 
+    // Power-ups: a charged leapfrog is an escape valve when the fight is
+    // going badly — vault clean over the player and reset the fight.
+    if (ai.hasLeapfrogCharge && ai.health < ai.maxHealth * 0.4 && dist < hb(160) && Math.random() < 0.4) {
+      controller.leapfrog(ai)
+      controller.move(ai, 0, 0)
+      return
+    }
+
     if (dist > strikeRange) {
       ai.moveDir = ai.x < target.x ? 1 : -1
       ai.aiSpeedRatio = dist > hb(140) ? 1 : 0.4
@@ -617,6 +746,12 @@ export function runEnemyAI(controller: FightController, ai: FighterState, dt: nu
     } else if (targetBusy && Math.random() < profile.blockBias) {
       ai.moveDir = 0
       ai.wantBlock = true
+    } else if (ai.hasSlideCharge && Math.random() < 0.55) {
+      // Slide kick can't be guarded — a charged AI leans into using it as
+      // a surprise mix-up rather than saving it forever.
+      ai.moveDir = 0
+      ai.wantBlock = false
+      controller.slideKick(ai)
     } else {
       ai.wantBlock = false
       const roll = Math.random()

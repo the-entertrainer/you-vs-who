@@ -95,6 +95,35 @@ export function drawComicText(
   ctx.restore()
 }
 
+const POWERUP_COLORS: Record<string, string> = { slide: '#ffa23f', leapfrog: '#3fd0ee' }
+const POWERUP_LABELS: Record<string, string> = { slide: 'S', leapfrog: 'L' }
+
+/** A pulsing pickup orb marking a power-up on the ground, with a bobbing float and letter tag. */
+export function drawPowerUp(ctx: CanvasRenderingContext2D, x: number, y: number, kind: string, clock: number) {
+  const bob = Math.sin(clock * 3.2) * 4
+  const pulse = 0.9 + Math.sin(clock * 5) * 0.08
+  const color = POWERUP_COLORS[kind] ?? '#fff'
+
+  ctx.save()
+  ctx.translate(x, y + bob)
+  ctx.scale(pulse, pulse)
+
+  ctx.beginPath()
+  ctx.arc(0, 0, 12, 0, Math.PI * 2)
+  ctx.fillStyle = color
+  ctx.fill()
+  ctx.lineWidth = 2.5
+  ctx.strokeStyle = '#0a0a0a'
+  ctx.stroke()
+
+  ctx.font = `12px "BoldPixels", "Space Mono", sans-serif`
+  ctx.textAlign = 'center'
+  ctx.textBaseline = 'middle'
+  ctx.fillStyle = '#0a0a0a'
+  ctx.fillText(POWERUP_LABELS[kind] ?? '?', 0, 1)
+  ctx.restore()
+}
+
 export function pickOnomatopoeia(): string {
   return ONOMATOPOEIA[Math.floor(Math.random() * ONOMATOPOEIA.length)]
 }

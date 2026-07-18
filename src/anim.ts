@@ -33,6 +33,8 @@ export type AnimName =
   | 'hit'
   | 'death'
   | 'wallslide'
+  | 'slide'
+  | 'climb'
   | 'comboJab'
   | 'comboCross'
   | 'comboFinisher'
@@ -65,7 +67,9 @@ export function getClips(characterId: string): Record<AnimName, ClipDef> {
     airAttack: { frames: framesFor(characterId, 'air_attack_'), fps: 14, loop: false },
     hit: { frames: framesFor(characterId, 'hit_'), fps: 16, loop: false },
     death: { frames: framesFor(characterId, 'death_'), fps: 12, loop: false },
-    wallslide: { frames: framesFor(characterId, 'wallslide'), fps: 8, loop: true },
+    wallslide: { frames: framesFor(characterId, 'wallslide'), fps: 8, loop: false },
+    slide: { frames: framesFor(characterId, 'slide_'), fps: 24, loop: false },
+    climb: { frames: framesFor(characterId, 'climb_'), fps: 12, loop: false },
     comboJab: { frames: comboJab, fps: 26, loop: false },
     comboCross: { frames: comboCross, fps: 26, loop: false },
     comboFinisher: { frames: comboFinisher, fps: 20, loop: false },

@@ -16,12 +16,13 @@ import {
   type EnemyProfile,
   type FightEvent,
   type FighterState,
+  type PowerUpState,
 } from './engine'
 import { drawFighter } from './sprite'
 import { preloadSprites } from './anim'
-import { drawBurst, drawComicText, pickLaunchLine, pickOnomatopoeia } from './comic'
+import { drawBurst, drawComicText, drawPowerUp, pickLaunchLine, pickOnomatopoeia } from './comic'
 import { hapticLight, hapticMedium, hapticStrong } from './haptics'
-import { isMuted, setMuted, sfxBlock, sfxLose, sfxMenuConfirm, sfxPunch, sfxSpecial, sfxUnlock, sfxWin } from './audio'
+import { isMuted, setMuted, sfxBlock, sfxLose, sfxMenuConfirm, sfxPowerUp, sfxPunch, sfxSpecial, sfxUnlock, sfxWin } from './audio'
 
 import playIcon from './assets/ui/icons/play-black.png'
 import pauseIcon from './assets/ui/icons/pause-black.png'
@@ -105,9 +106,14 @@ const opponentHealth = ref(100)
 const opponentMaxHealth = ref(100)
 const roundTimeLeft = ref(ROUND_TIME)
 const comboStep = ref(0)
+const playerHasSlide = ref(false)
+const playerHasLeapfrog = ref(false)
+const opponentHasSlide = ref(false)
+const opponentHasLeapfrog = ref(false)
 let backdrop: HTMLCanvasElement | null = null
 let shake = 0
 let slowMoMs = 0
+let pulseClock = 0
 
 const selectedOpponent = ref<EnemyProfile>(ENEMY_ROSTER[0])
 const playerRounds = ref(0)
@@ -206,6 +212,8 @@ function gestureUp() {
     if (dist > FLICK_MIN_DIST && speed > FLICK_MIN_SPEED) {
       if (Math.abs(dy) > Math.abs(dx) && dy < 0) {
         doJumpOrAirAttack()
+      } else if (Math.abs(dy) > Math.abs(dx) && dy > 0) {
+        doSlideKick()
       } else {
         doSwipeStrike(dx > 0 ? 1 : -1)
       }
@@ -256,12 +264,17 @@ async function startRound() {
   comicTexts.length = 0
   shake = 0
   slowMoMs = 0
+  pulseClock = 0
   comboStep.value = 0
   playerHealth.value = c.player.health
   playerMaxHealth.value = c.player.maxHealth
   opponentHealth.value = c.opponent.health
   opponentMaxHealth.value = c.opponent.maxHealth
   roundTimeLeft.value = c.roundTime
+  playerHasSlide.value = false
+  playerHasLeapfrog.value = false
+  opponentHasSlide.value = false
+  opponentHasLeapfrog.value = false
   paused.value = false
   screen.value = 'fight'
   lastTs = 0
@@ -360,6 +373,7 @@ function loop(ts: number) {
   runEnemyAI(c, c.opponent, dt)
   c.update(dt)
   comboStep.value = c.player.comboStep
+  pulseClock += realDt
 
   const evs = c.events.splice(0)
   for (const ev of evs) handleEvent(ev)
@@ -369,6 +383,10 @@ function loop(ts: number) {
   opponentHealth.value = c.opponent.health
   opponentMaxHealth.value = c.opponent.maxHealth
   roundTimeLeft.value = c.roundTime
+  playerHasSlide.value = c.player.hasSlideCharge
+  playerHasLeapfrog.value = c.player.hasLeapfrogCharge
+  opponentHasSlide.value = c.opponent.hasSlideCharge
+  opponentHasLeapfrog.value = c.opponent.hasLeapfrogCharge
 
   for (const b of bursts) b.age += realDt * 1000
   while (bursts.length && bursts[0].age > bursts[0].life) bursts.shift()
@@ -408,6 +426,11 @@ function handleEvent(ev: FightEvent) {
     bursts.push({ id: effectId++, x: ev.x, y: ev.y, age: 0, life: BURST_LIFE, seed: effectId, big: false })
     comicTexts.push({ id: effectId++, x: ev.x, y: ev.y - 8, age: 0, life: 1200, seed: effectId, text: 'K.O.!!', size: 30 })
     shake = 16
+  } else if (ev.type === 'powerup') {
+    sfxPowerUp()
+    hapticLight()
+    const label = ev.powerUpKind === 'slide' ? 'SLIDE KICK!' : 'LEAPFROG!'
+    comicTexts.push({ id: effectId++, x: ev.x, y: ev.y - 8, age: 0, life: TEXT_LIFE, seed: effectId, text: label, size: 20 })
   }
 }
 
@@ -431,6 +454,8 @@ function render(c: FightController) {
     ctx.fillRect(0, 0, ARENA_W, ARENA_H)
   }
 
+  for (const p of c.powerUps) drawPowerUp(ctx, p.x, p.y - 40, p.kind, pulseClock)
+
   const all: FighterState[] = [c.player, c.opponent].sort((f1, f2) => f1.x - f2.x)
   for (const f of all) drawFighter(ctx, f, f.isPlayer)
 
@@ -444,6 +469,17 @@ function doJumpOrAirAttack() {
   const c = controller.value
   if (!c) return
   if (c.player.grounded) {
+    // A charged leapfrog hijacks the jump gesture only when it's actually
+    // useful (opponent close enough to vault) — otherwise jump normally.
+    if (c.player.hasLeapfrogCharge && Math.abs(c.player.x - c.opponent.x) < 140) {
+      const before = c.player.anim
+      c.leapfrog(c.player)
+      if (c.player.anim !== before) {
+        sfxSpecial()
+        hapticStrong()
+        return
+      }
+    }
     c.jump(c.player)
   } else {
     const before = c.player.anim
@@ -452,6 +488,17 @@ function doJumpOrAirAttack() {
       sfxSpecial()
       hapticStrong()
     }
+  }
+}
+
+function doSlideKick() {
+  const c = controller.value
+  if (!c) return
+  const before = c.player.anim
+  c.slideKick(c.player)
+  if (c.player.anim !== before) {
+    sfxSpecial()
+    hapticStrong()
   }
 }
 
@@ -573,7 +620,8 @@ onBeforeUnmount(() => {
       <div class="pixel-panel black instructions-panel">
         <p class="instructions">
           DRAG to walk / run &middot; TAP to combo<br />
-          FLICK to dash-strike or jump &middot; HOLD to guard
+          FLICK up/side to jump/dash &middot; HOLD to guard<br />
+          Grab power-ups &middot; FLICK down to unleash them
         </p>
       </div>
       <button class="sound-toggle" @click="toggleSound">
@@ -619,7 +667,11 @@ onBeforeUnmount(() => {
           <div class="pixel-bar black">
             <div class="pixel-bar-fill" :class="healthTier" :style="{ width: (playerHealth / playerMaxHealth) * 100 + '%' }"></div>
           </div>
-          <span v-if="comboStep > 0" class="combo-badge">{{ comboStep }}-HIT!</span>
+          <div class="power-badges">
+            <span v-if="comboStep > 0" class="combo-badge">{{ comboStep }}-HIT!</span>
+            <span v-if="playerHasSlide" class="power-badge slide">SLIDE READY</span>
+            <span v-if="playerHasLeapfrog" class="power-badge leap">LEAP READY</span>
+          </div>
         </div>
 
         <div class="hud-center">
@@ -638,6 +690,10 @@ onBeforeUnmount(() => {
           </div>
           <div class="pixel-bar black mirror">
             <div class="pixel-bar-fill mirror" :class="opponentHealthTier" :style="{ width: (opponentHealth / opponentMaxHealth) * 100 + '%' }"></div>
+          </div>
+          <div class="power-badges reverse">
+            <span v-if="opponentHasSlide" class="power-badge slide">SLIDE READY</span>
+            <span v-if="opponentHasLeapfrog" class="power-badge leap">LEAP READY</span>
           </div>
         </div>
       </div>
@@ -678,7 +734,7 @@ onBeforeUnmount(() => {
       </div>
 
       <div class="gesture-legend">
-        <span>drag=move</span><span>tap=punch</span><span>flick=dash/jump</span><span>hold=guard</span>
+        <span>drag=move</span><span>tap=punch</span><span>flick=dash/jump</span><span>down-flick=power-up</span><span>hold=guard</span>
       </div>
     </div>
 
@@ -956,6 +1012,18 @@ onBeforeUnmount(() => {
   padding: 1px 6px;
   align-self: flex-start;
 }
+
+.power-badges { display: flex; flex-wrap: wrap; gap: 4px; }
+.power-badges.reverse { justify-content: flex-end; }
+.power-badge {
+  font-family: var(--font-pixel);
+  font-size: 8px;
+  letter-spacing: 0.5px;
+  color: #000;
+  padding: 1px 5px;
+}
+.power-badge.slide { background: #ffa23f; }
+.power-badge.leap { background: #3fd0ee; }
 
 .canvas-wrap {
   position: relative;

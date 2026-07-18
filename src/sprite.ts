@@ -6,6 +6,12 @@ function clipFor(anim: FighterAnim): AnimName {
   switch (anim) {
     case 'dashAttack':
       return 'dash'
+    case 'slideKick':
+      return 'slide'
+    case 'leapfrog':
+      return 'climb'
+    case 'leapfrogLand':
+      return 'wallslide'
     case 'block':
       return 'idle'
     case 'launched':
