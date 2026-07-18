@@ -99,5 +99,14 @@ export function drawFighter(ctx: CanvasRenderingContext2D, f: FighterState, isPl
   ctx.drawImage(tintCanvas, -SPRITE_W / 2, -SPRITE_H)
   ctx.shadowBlur = 0
 
+  // Cheap directional rim-light: the same silhouette redrawn shifted
+  // up-left and additively blended, standing in for a key light without a
+  // real lighting pass — gives the flat sprite a hint of 3D roundness.
+  ctx.globalCompositeOperation = 'lighter'
+  ctx.globalAlpha = 0.3
+  ctx.drawImage(tintCanvas, -SPRITE_W / 2 - 1.5, -SPRITE_H - 1.5)
+  ctx.globalAlpha = 1
+  ctx.globalCompositeOperation = 'source-over'
+
   ctx.restore()
 }

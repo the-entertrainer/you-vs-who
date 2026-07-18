@@ -4,7 +4,7 @@ import QRCode from 'qrcode'
 import { LOSE_QUOTES, WIN_QUOTES } from './data'
 import { DEFAULT_PLAYER_ID, DEFAULT_RIVAL_ID } from './characters'
 import { ENEMY_ROSTER } from './enemies'
-import { generateBackdrop } from './procgen'
+import { generateBackdrop, type Backdrop } from './procgen'
 import {
   ARENA_H,
   ARENA_W,
@@ -110,7 +110,7 @@ const playerHasSlide = ref(false)
 const playerHasLeapfrog = ref(false)
 const opponentHasSlide = ref(false)
 const opponentHasLeapfrog = ref(false)
-let backdrop: HTMLCanvasElement | null = null
+let backdrop: Backdrop | null = null
 let shake = 0
 let slowMoMs = 0
 let pulseClock = 0
@@ -259,7 +259,7 @@ async function startRound() {
   }
   const c = new FightController(DEFAULT_PLAYER_ID, selectedOpponent.value, DEFAULT_RIVAL_ID)
   controller.value = c
-  backdrop = generateBackdrop(ARENA_W, ARENA_H, GROUND_Y, Math.floor(Math.random() * 1e9)).canvas
+  backdrop = generateBackdrop(ARENA_W, ARENA_H, GROUND_Y, Math.floor(Math.random() * 1e9))
   bursts.length = 0
   comicTexts.length = 0
   shake = 0
@@ -447,22 +447,77 @@ function render(c: FightController) {
     ctx.translate((Math.random() - 0.5) * shake, (Math.random() - 0.5) * shake)
   }
 
+  const midX = (c.player.x + c.opponent.x) / 2
+  const centerRatio = Math.max(-1, Math.min(1, (midX - ARENA_W / 2) / (ARENA_W / 2)))
+
   if (backdrop) {
-    ctx.drawImage(backdrop, 0, 0)
+    // Two-layer parallax: the far skyline pans a little slower than the
+    // near office wall, both driven by how far the fight's center of
+    // action has drifted from the arena midpoint — a depth cue with no
+    // real camera/scrolling involved.
+    const farOffset = -centerRatio * backdrop.farMargin * 0.6
+    const nearOffset = -centerRatio * backdrop.nearMargin * 0.9
+    ctx.drawImage(backdrop.far, -backdrop.farMargin + farOffset, 0)
+    ctx.drawImage(backdrop.near, -backdrop.nearMargin + nearOffset, 0)
   } else {
     ctx.fillStyle = '#10131f'
     ctx.fillRect(0, 0, ARENA_W, ARENA_H)
   }
+
+  drawFog(ctx, pulseClock)
 
   for (const p of c.powerUps) drawPowerUp(ctx, p.x, p.y - 40, p.kind, pulseClock)
 
   const all: FighterState[] = [c.player, c.opponent].sort((f1, f2) => f1.x - f2.x)
   for (const f of all) drawFighter(ctx, f, f.isPlayer)
 
+  drawSpotlight(ctx, midX)
+
   for (const b of bursts) drawBurst(ctx, b.x, b.y, b.age, b.life, b.seed, b.big)
   for (const t of comicTexts) drawComicText(ctx, t.text, t.x, t.y, t.age, t.life, t.seed, t.size)
 
+  drawVignette(ctx)
+
   ctx.restore()
+}
+
+/** Slow-drifting translucent haze near the floor for atmospheric depth. */
+function drawFog(ctx: CanvasRenderingContext2D, clock: number) {
+  ctx.save()
+  ctx.globalCompositeOperation = 'lighter'
+  for (let i = 0; i < 3; i++) {
+    const speed = 5 + i * 3
+    const x = ((clock * speed + i * 240) % (ARENA_W + 160)) - 80
+    const y = GROUND_Y - 4 - i * 9
+    const r = 65 + i * 18
+    const grad = ctx.createRadialGradient(x, y, 0, x, y, r)
+    grad.addColorStop(0, 'rgba(180, 200, 255, 0.06)')
+    grad.addColorStop(1, 'rgba(180, 200, 255, 0)')
+    ctx.fillStyle = grad
+    ctx.fillRect(x - r, y - r, r * 2, r * 2)
+  }
+  ctx.restore()
+}
+
+/** A soft warm key-light bloom over the fight, standing in for real 3D lighting on a flat 2D scene. */
+function drawSpotlight(ctx: CanvasRenderingContext2D, midX: number) {
+  ctx.save()
+  ctx.globalCompositeOperation = 'lighter'
+  const grad = ctx.createRadialGradient(midX, GROUND_Y - 70, 10, midX, GROUND_Y - 70, 170)
+  grad.addColorStop(0, 'rgba(255, 240, 210, 0.10)')
+  grad.addColorStop(1, 'rgba(255, 240, 210, 0)')
+  ctx.fillStyle = grad
+  ctx.fillRect(0, 0, ARENA_W, ARENA_H)
+  ctx.restore()
+}
+
+/** Plain corner darkening for depth/focus — no scanlines or flicker, just a soft vignette. */
+function drawVignette(ctx: CanvasRenderingContext2D) {
+  const grad = ctx.createRadialGradient(ARENA_W / 2, ARENA_H / 2, ARENA_H * 0.35, ARENA_W / 2, ARENA_H / 2, ARENA_H * 0.85)
+  grad.addColorStop(0, 'rgba(0, 0, 0, 0)')
+  grad.addColorStop(1, 'rgba(0, 0, 0, 0.45)')
+  ctx.fillStyle = grad
+  ctx.fillRect(0, 0, ARENA_W, ARENA_H)
 }
 
 function doJumpOrAirAttack() {
@@ -701,7 +756,6 @@ onBeforeUnmount(() => {
       <div class="canvas-wrap" ref="canvasWrapRef">
         <div class="canvas-frame" :style="{ width: canvasDisplaySize.w + 'px', height: canvasDisplaySize.h + 'px' }">
           <canvas ref="canvasRef" :width="ARENA_W" :height="ARENA_H" class="fight-canvas"></canvas>
-          <div class="crt-overlay"></div>
         </div>
         <div v-if="gesture.blockHeld" class="block-indicator">GUARDING!</div>
 
@@ -1044,28 +1098,6 @@ onBeforeUnmount(() => {
   border: 3px solid #000;
   outline: 2px solid #3a4166;
   background: #10131f;
-}
-
-/* CRT overlay: dark scanlines + faint RGB fringe + vignette + a slow flicker */
-.crt-overlay {
-  position: absolute;
-  inset: 0;
-  pointer-events: none;
-  background:
-    repeating-linear-gradient(rgba(18, 16, 16, 0) 0, rgba(18, 16, 16, 0) 1px, rgba(0, 0, 0, 0.3) 2px, rgba(0, 0, 0, 0.3) 2px),
-    linear-gradient(90deg, rgba(255, 0, 60, 0.05), rgba(0, 255, 100, 0.02), rgba(0, 90, 255, 0.05)),
-    radial-gradient(ellipse at center, rgba(0, 0, 0, 0) 55%, rgba(0, 0, 0, 0.65) 100%);
-  background-size: 100% 3px, 3px 100%, 100% 100%;
-  mix-blend-mode: multiply;
-  animation: crtFlicker 3s infinite;
-}
-@keyframes crtFlicker {
-  0%, 100% { opacity: 0.92; }
-  8% { opacity: 0.78; }
-  10% { opacity: 0.95; }
-  50% { opacity: 0.88; }
-  78% { opacity: 0.94; }
-  92% { opacity: 0.8; }
 }
 
 .block-indicator {
