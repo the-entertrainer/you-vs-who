@@ -167,6 +167,16 @@ export class FightController {
     this.startMove(f, 'comboJab')
   }
 
+  /** Forces a dash-strike from a standstill — used by fast horizontal swipe gestures. */
+  swipeStrike(f: FighterState, dir: -1 | 1) {
+    if (!this.canAct(f) || !f.grounded || this.isBusy(f)) return
+    f.facing = dir
+    f.x += dir * 10
+    f.x = Math.max(24, Math.min(ARENA_W - 24, f.x))
+    this.startMove(f, 'dashAttack')
+    f.comboStep = 0
+  }
+
   setBlocking(f: FighterState, on: boolean) {
     f.wantBlock = on
     if (this.canAct(f) && f.grounded && !this.isBusy(f)) {

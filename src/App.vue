@@ -73,8 +73,104 @@ const opponentHealth = ref(100)
 const timeRemaining = ref(60)
 const comboStep = ref(0)
 
-const moveState = reactive({ left: false, right: false, leftSince: 0, rightSince: 0 })
-const RUN_THRESHOLD = 220
+// ---------------- Swipe / tap / hold gesture recognizer ----------------
+// Everything is one full-surface gesture: drag horizontally to walk (drag
+// further to break into a run), a fast horizontal flick throws a dash
+// strike, a fast upward flick jumps (or air-strikes if already airborne),
+// holding still in place guards, and a quick tap throws a combo punch.
+const TAP_MAX_DIST = 16
+const TAP_MAX_DURATION = 220
+const DRAG_DEADZONE = 16
+const RUN_DRAG_DIST = 55
+const FLICK_MIN_DIST = 40
+const FLICK_MIN_SPEED = 0.55 // px/ms
+const HOLD_BLOCK_DELAY = 180
+
+const gesture = reactive({
+  active: false,
+  dragging: false,
+  blockHeld: false,
+  startX: 0,
+  startY: 0,
+  curX: 0,
+  curY: 0,
+  startTime: 0,
+})
+let holdTimer = 0
+
+function gestureDown(e: PointerEvent) {
+  gesture.active = true
+  gesture.dragging = false
+  gesture.blockHeld = false
+  gesture.startX = e.clientX
+  gesture.startY = e.clientY
+  gesture.curX = e.clientX
+  gesture.curY = e.clientY
+  gesture.startTime = performance.now()
+  window.clearTimeout(holdTimer)
+  holdTimer = window.setTimeout(() => {
+    if (gesture.active && !gesture.dragging) {
+      gesture.blockHeld = true
+      setBlock(true)
+    }
+  }, HOLD_BLOCK_DELAY)
+}
+
+function gestureMove(e: PointerEvent) {
+  if (!gesture.active) return
+  gesture.curX = e.clientX
+  gesture.curY = e.clientY
+  if (!gesture.dragging && !gesture.blockHeld) {
+    const dx = gesture.curX - gesture.startX
+    const dy = gesture.curY - gesture.startY
+    if (Math.hypot(dx, dy) > DRAG_DEADZONE) {
+      gesture.dragging = true
+      window.clearTimeout(holdTimer)
+    }
+  }
+}
+
+function gestureUp() {
+  if (!gesture.active) return
+  gesture.active = false
+  window.clearTimeout(holdTimer)
+
+  if (gesture.blockHeld) {
+    gesture.blockHeld = false
+    setBlock(false)
+    return
+  }
+
+  const dx = gesture.curX - gesture.startX
+  const dy = gesture.curY - gesture.startY
+  const dist = Math.hypot(dx, dy)
+  const duration = performance.now() - gesture.startTime
+
+  if (gesture.dragging) {
+    gesture.dragging = false
+    const speed = dist / Math.max(1, duration)
+    if (dist > FLICK_MIN_DIST && speed > FLICK_MIN_SPEED) {
+      if (Math.abs(dy) > Math.abs(dx) && dy < 0) {
+        doJumpOrAirAttack()
+      } else {
+        doSwipeStrike(dx > 0 ? 1 : -1)
+      }
+    }
+    return
+  }
+
+  if (dist <= TAP_MAX_DIST && duration <= TAP_MAX_DURATION) {
+    doAttack()
+  }
+}
+
+function gestureCancel() {
+  if (gesture.blockHeld) setBlock(false)
+  gesture.active = false
+  gesture.dragging = false
+  gesture.blockHeld = false
+  window.clearTimeout(holdTimer)
+}
 
 async function startFight() {
   sfxUnlock()
@@ -120,15 +216,15 @@ function loop(ts: number) {
   lastTs = ts
   dt = Math.min(dt, 0.048)
 
-  const now = performance.now()
   let dir: -1 | 0 | 1 = 0
   let running = false
-  if (moveState.left && !moveState.right) {
-    dir = -1
-    running = now - moveState.leftSince > RUN_THRESHOLD
-  } else if (moveState.right && !moveState.left) {
-    dir = 1
-    running = now - moveState.rightSince > RUN_THRESHOLD
+  if (gesture.active && gesture.dragging) {
+    const dx = gesture.curX - gesture.startX
+    const dy = gesture.curY - gesture.startY
+    if (Math.abs(dx) > Math.abs(dy)) {
+      dir = dx > 0 ? 1 : -1
+      running = Math.abs(dx) > RUN_DRAG_DIST
+    }
   }
   c.move(c.a, dir, running)
 
@@ -208,10 +304,30 @@ function render(c: FightController) {
   }
 }
 
-function doJump() {
+function doJumpOrAirAttack() {
   const c = controller.value
   if (!c) return
-  c.jump(c.a)
+  if (c.a.grounded) {
+    c.jump(c.a)
+  } else {
+    const before = c.a.anim
+    c.attack(c.a)
+    if (c.a.anim !== before && c.a.anim === 'airAttack') {
+      sfxSpecial()
+      hapticStrong()
+    }
+  }
+}
+
+function doSwipeStrike(dir: -1 | 1) {
+  const c = controller.value
+  if (!c) return
+  const before = c.a.anim
+  c.swipeStrike(c.a, dir)
+  if (c.a.anim !== before) {
+    sfxSpecial()
+    hapticStrong()
+  }
 }
 
 function doAttack() {
@@ -234,15 +350,6 @@ function setBlock(on: boolean) {
   const c = controller.value
   if (!c) return
   c.setBlocking(c.a, on)
-}
-
-function pressLeft(on: boolean) {
-  moveState.left = on
-  if (on) moveState.leftSince = performance.now()
-}
-function pressRight(on: boolean) {
-  moveState.right = on
-  if (on) moveState.rightSince = performance.now()
 }
 
 function rematch() {
@@ -294,6 +401,7 @@ onBeforeUnmount(() => {
   cancelAnimationFrame(rafId)
   window.removeEventListener('resize', onResize)
   resizeObserver?.disconnect()
+  window.clearTimeout(holdTimer)
 })
 </script>
 
@@ -342,14 +450,23 @@ onBeforeUnmount(() => {
       <p class="body-sm subtitle">AN OFFICE COMBO BRAWLER</p>
       <button class="press-start" @click="startFight">PRESS START</button>
       <p class="body-sm instructions">
-        HOLD A DIRECTION TO RUN &middot; TAP ATTACK TO CHAIN A 3-HIT COMBO<br />
-        JUMP + ATTACK = AIR STRIKE &middot; RUN + ATTACK = DASH STRIKE &middot; HOLD BLOCK TO GUARD
+        DRAG TO WALK, HOLD THE DRAG TO RUN &middot; TAP TO CHAIN A 3-HIT COMBO<br />
+        FLICK &larr;&rarr; FOR A DASH STRIKE &middot; FLICK &uarr; TO JUMP (AGAIN MID-AIR TO STRIKE)<br />
+        PRESS AND HOLD STILL TO GUARD
       </p>
       <p class="footer-tag">1 CUBICLE // 1 RIVAL // 0 HR COMPLAINTS FILED</p>
     </div>
 
     <!-- Fight -->
-    <div v-else-if="screen === 'fight'" class="screen fight-screen">
+    <div
+      v-else-if="screen === 'fight'"
+      class="screen fight-screen"
+      @pointerdown.prevent="gestureDown"
+      @pointermove.prevent="gestureMove"
+      @pointerup.prevent="gestureUp"
+      @pointercancel="gestureCancel"
+      @pointerleave="gestureCancel"
+    >
       <div class="fight-hud">
         <div class="hud-side">
           <span class="hud-name">YOU</span>
@@ -377,36 +494,15 @@ onBeforeUnmount(() => {
           class="fight-canvas"
           :style="{ width: canvasDisplaySize.w + 'px', height: canvasDisplaySize.h + 'px' }"
         ></canvas>
+        <div v-if="gesture.blockHeld" class="block-indicator">GUARDING</div>
       </div>
 
-      <div class="controls">
-        <div class="dpad-controls">
-          <button
-            class="dpad-btn left"
-            @pointerdown.prevent="pressLeft(true)"
-            @pointerup.prevent="pressLeft(false)"
-            @pointerleave="pressLeft(false)"
-            @pointercancel="pressLeft(false)"
-          >◀</button>
-          <button
-            class="dpad-btn right"
-            @pointerdown.prevent="pressRight(true)"
-            @pointerup.prevent="pressRight(false)"
-            @pointerleave="pressRight(false)"
-            @pointercancel="pressRight(false)"
-          >▶</button>
-          <button class="dpad-btn up" @pointerdown.prevent="doJump">▲</button>
-          <button
-            class="block-btn"
-            @pointerdown.prevent="setBlock(true)"
-            @pointerup.prevent="setBlock(false)"
-            @pointerleave="setBlock(false)"
-            @pointercancel="setBlock(false)"
-          >BLOCK</button>
-        </div>
-        <div class="action-buttons">
-          <button class="action-btn attack" @pointerdown.prevent="doAttack">ATTACK</button>
-        </div>
+      <div class="gesture-legend">
+        <span>&larr;&rarr; DRAG WALK / RUN</span>
+        <span>&uarr; FLICK JUMP / AIR STRIKE</span>
+        <span>TAP COMBO</span>
+        <span>FLICK &larr;&rarr; DASH STRIKE</span>
+        <span>HOLD GUARD</span>
       </div>
     </div>
 
@@ -611,6 +707,8 @@ onBeforeUnmount(() => {
   background: #000;
   height: 100dvh;
   justify-content: space-between;
+  touch-action: none;
+  user-select: none;
 }
 .fight-hud {
   display: flex;
@@ -637,6 +735,7 @@ onBeforeUnmount(() => {
 }
 
 .canvas-wrap {
+  position: relative;
   flex: 1;
   display: flex;
   align-items: center;
@@ -649,57 +748,37 @@ onBeforeUnmount(() => {
   background: #000;
 }
 
-.controls {
-  display: flex;
-  align-items: flex-end;
-  justify-content: space-between;
-  padding: 10px 14px 20px;
-  gap: 10px;
-}
-.dpad-controls { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; max-width: 160px; }
-.dpad-btn {
-  width: 44px;
-  height: 44px;
-  background: var(--c-outline-variant);
-  border: 2px solid #000;
-  border-right: 4px solid #000;
-  border-bottom: 4px solid #000;
-  font-size: 15px;
-}
-.dpad-btn:active { transform: translate(2px, 2px); border-right: 2px solid #000; border-bottom: 2px solid #000; }
-.block-btn {
-  height: 38px;
-  padding: 0 10px;
-  background: var(--c-primary-container);
-  color: #fff;
-  border: 2px solid #000;
-  border-right: 4px solid #000;
-  border-bottom: 4px solid #000;
-  font-size: 9px;
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 1px;
-}
-.block-btn:active { transform: translate(2px, 2px); border-right: 2px solid #000; border-bottom: 2px solid #000; }
-
-.action-buttons { display: flex; gap: 8px; }
-.action-btn {
-  position: relative;
-  width: 84px;
-  height: 84px;
-  border-radius: 50%;
-  border: 3px solid #000;
-  color: #fff;
+.block-indicator {
+  position: absolute;
+  bottom: 6px;
+  left: 50%;
+  transform: translateX(-50%);
   font-family: var(--font-headline);
-  font-size: 12px;
+  font-size: 10px;
   font-weight: 700;
-  box-shadow: 4px 4px 0 #000;
-  overflow: hidden;
-  text-transform: uppercase;
   letter-spacing: 1px;
+  color: #000;
+  background: var(--c-primary-fixed, #cce5ff);
+  border: 2px solid #000;
+  padding: 2px 10px;
 }
-.action-btn:active { transform: translate(2px, 2px); box-shadow: 2px 2px 0 #000; }
-.action-btn.attack { background: var(--c-error); }
+
+.gesture-legend {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 6px 10px;
+  padding: 10px 14px 20px;
+  color: var(--c-outline-variant);
+  font-size: 8px;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  text-align: center;
+}
+.gesture-legend span {
+  border: 1px solid var(--c-outline-variant);
+  padding: 3px 6px;
+}
 
 /* ---------- Results ---------- */
 .results-screen {
