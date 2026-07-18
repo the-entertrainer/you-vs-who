@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, shallowRef } from 'vue'
 import QRCode from 'qrcode'
-import { HIT_MESSAGES, LOSE_QUOTES, WIN_QUOTES } from './data'
+import { LOSE_QUOTES, WIN_QUOTES } from './data'
 import {
   ARENA_H,
   ARENA_W,
@@ -14,7 +14,8 @@ import {
 } from './engine'
 import { drawFighter } from './sprite'
 import { drawOffice } from './arena'
-import { HIT_EFFECT_FRAMES, getImage, preloadSprites } from './anim'
+import { preloadSprites } from './anim'
+import { drawBurst, drawComicText, pickOnomatopoeia } from './comic'
 import { hapticLight, hapticMedium, hapticStrong } from './haptics'
 import { sfxBlock, sfxLose, sfxMenuConfirm, sfxPunch, sfxSpecial, sfxUnlock, sfxWin } from './audio'
 
@@ -63,15 +64,18 @@ function fitCanvasToWrap() {
 
 const controller = shallowRef<FightController | null>(null)
 const aiMemory = reactive<AIMemory>({ thinkCooldown: 300, wantChain: false })
-const floaters = reactive<{ id: number; x: number; y: number; text: string; life: number; color: string }[]>([])
-const hitEffects = reactive<{ id: number; x: number; y: number; age: number }[]>([])
-let floaterId = 0
+const BURST_LIFE = 380
+const TEXT_LIFE = 620
+const bursts = reactive<{ id: number; x: number; y: number; age: number; seed: number }[]>([])
+const comicTexts = reactive<{ id: number; x: number; y: number; age: number; seed: number; text: string }[]>([])
+let effectId = 0
 let rafId = 0
 let lastTs = 0
 const playerHealth = ref(100)
 const opponentHealth = ref(100)
 const timeRemaining = ref(60)
 const comboStep = ref(0)
+let shake = 0
 
 // ---------------- Swipe / tap / hold gesture recognizer ----------------
 // Everything is one full-surface gesture: drag horizontally to walk (drag
@@ -178,8 +182,9 @@ async function startFight() {
   controller.value = new FightController()
   aiMemory.thinkCooldown = 300
   aiMemory.wantChain = false
-  floaters.length = 0
-  hitEffects.length = 0
+  bursts.length = 0
+  comicTexts.length = 0
+  shake = 0
   comboStep.value = 0
   screen.value = 'fight'
   lastTs = 0
@@ -239,10 +244,12 @@ function loop(ts: number) {
   opponentHealth.value = c.b.health
   timeRemaining.value = Math.ceil(Math.max(0, c.time))
 
-  for (const f of floaters) f.life -= dt * 1000
-  while (floaters.length && floaters[0].life <= 0) floaters.shift()
-  for (const h of hitEffects) h.age += dt * 1000
-  while (hitEffects.length && hitEffects[0].age > 260) hitEffects.shift()
+  for (const b of bursts) b.age += dt * 1000
+  while (bursts.length && bursts[0].age > BURST_LIFE) bursts.shift()
+  for (const t of comicTexts) t.age += dt * 1000
+  while (comicTexts.length && comicTexts[0].age > TEXT_LIFE) comicTexts.shift()
+  shake *= 0.82
+  if (shake < 0.3) shake = 0
 
   render(c)
 
@@ -261,11 +268,13 @@ function handleEvent(ev: FightEvent) {
     if (ev.type === 'finisher') sfxSpecial()
     else sfxPunch()
     hapticMedium()
-    const msg = HIT_MESSAGES[Math.floor(Math.random() * HIT_MESSAGES.length)]
-    floaters.push({ id: floaterId++, x: ev.x, y: ev.y, text: msg, life: 650, color: ev.type === 'finisher' ? '#b62515' : '#0f3651' })
-    hitEffects.push({ id: floaterId++, x: ev.x, y: ev.y, age: 0 })
+    bursts.push({ id: effectId++, x: ev.x, y: ev.y, age: 0, seed: effectId })
+    comicTexts.push({ id: effectId++, x: ev.x, y: ev.y - 8, age: 0, seed: effectId, text: pickOnomatopoeia() })
+    shake = ev.type === 'finisher' ? 11 : 6
   } else if (ev.type === 'ko') {
-    floaters.push({ id: floaterId++, x: ev.x, y: ev.y, text: 'K.O.!', life: 1200, color: '#0f3651' })
+    bursts.push({ id: effectId++, x: ev.x, y: ev.y, age: 0, seed: effectId })
+    comicTexts.push({ id: effectId++, x: ev.x, y: ev.y - 8, age: 0, seed: effectId, text: 'K.O.!!' })
+    shake = 16
   }
 }
 
@@ -274,34 +283,23 @@ function render(c: FightController) {
   if (!canvas) return
   const ctx = canvas.getContext('2d')
   if (!ctx) return
-  ctx.imageSmoothingEnabled = false
+  ctx.imageSmoothingEnabled = true
   ctx.clearRect(0, 0, ARENA_W, ARENA_H)
+
+  ctx.save()
+  if (shake > 0) {
+    ctx.translate((Math.random() - 0.5) * shake, (Math.random() - 0.5) * shake)
+  }
 
   drawOffice(ctx)
 
   const order: FighterState[] = c.a.x <= c.b.x ? [c.a, c.b] : [c.b, c.a]
   for (const f of order) drawFighter(ctx, f, f.side === 'a' ? 'p1' : 'p2')
 
-  for (const h of hitEffects) {
-    const frameIdx = Math.min(HIT_EFFECT_FRAMES.length - 1, Math.floor((h.age / 260) * HIT_EFFECT_FRAMES.length))
-    const src = HIT_EFFECT_FRAMES[frameIdx]
-    if (src) {
-      const img = getImage(src)
-      const size = 46
-      ctx.drawImage(img, h.x - size / 2, h.y - size / 2, size, size)
-    }
-  }
+  for (const b of bursts) drawBurst(ctx, b.x, b.y, b.age, BURST_LIFE, b.seed)
+  for (const t of comicTexts) drawComicText(ctx, t.text, t.x, t.y, t.age, TEXT_LIFE, t.seed)
 
-  for (const f of floaters) {
-    ctx.fillStyle = f.color
-    ctx.font = 'bold 12px "Space Mono", monospace'
-    ctx.textAlign = 'center'
-    const rise = (1 - f.life / 650) * 22
-    ctx.strokeStyle = '#fff'
-    ctx.lineWidth = 3
-    ctx.strokeText(f.text, f.x, f.y - rise)
-    ctx.fillText(f.text, f.x, f.y - rise)
-  }
+  ctx.restore()
 }
 
 function doJumpOrAirAttack() {
@@ -378,7 +376,7 @@ onMounted(async () => {
     try {
       qrDataUrl.value = await QRCode.toDataURL(window.location.href, {
         margin: 1,
-        color: { dark: '#0f3651', light: '#fef9eb' },
+        color: { dark: '#0a0a0a', light: '#fff6e5' },
         width: 240,
       })
     } catch {
@@ -407,54 +405,37 @@ onBeforeUnmount(() => {
 
 <template>
   <div class="shell dither-bg">
-    <div class="scanlines"></div>
-
     <!-- Desktop QR screen -->
     <div v-if="screen === 'desktop-qr'" class="desktop-wrap">
-      <div class="handheld">
+      <div class="handheld wobble-border">
         <div class="handheld-top">
-          <span class="dot red"></span><span class="dot amber"></span><span class="dot green"></span>
+          <span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span>
         </div>
         <div class="handheld-screen">
-          <h1 class="title-lg">YOU VS WHO?</h1>
-          <p class="body-sm sub">office combo brawler, on your phone.</p>
-          <div class="qr-frame">
+          <h1 class="title-lg">YOU VS WHO?!</h1>
+          <p class="sub">a scribbly office combo brawler, on your phone.</p>
+          <div class="qr-frame wobble-border">
             <img v-if="qrDataUrl" :src="qrDataUrl" alt="QR code to open You vs Who? on mobile" />
-            <div v-else class="qr-fallback">LOADING QR...</div>
+            <div v-else class="qr-fallback">LOADING&hellip;</div>
           </div>
-          <p class="body-sm scan-msg">SCAN WITH YOUR PHONE</p>
-        </div>
-        <div class="handheld-bottom">
-          <div class="dpad">
-            <div class="dpad-up"></div>
-            <div class="dpad-mid">
-              <div class="dpad-left"></div>
-              <div class="dpad-center"></div>
-              <div class="dpad-right"></div>
-            </div>
-            <div class="dpad-down"></div>
-          </div>
-          <div class="ab-buttons">
-            <span class="ab-btn b-btn">B</span>
-            <span class="ab-btn a-btn">A</span>
-          </div>
+          <p class="scan-msg">SCAN WITH YOUR PHONE!</p>
         </div>
       </div>
       <p class="desktop-note">You vs Who? is a mobile-only combo brawler. Grab your phone and scan the code above.</p>
     </div>
 
     <!-- Title -->
-    <div v-else-if="screen === 'title'" class="screen title-screen">
-      <div class="title-bg dither-bg"></div>
-      <h1 class="title-huge">YOU<br />VS<br />WHO?</h1>
-      <p class="body-sm subtitle">AN OFFICE COMBO BRAWLER</p>
-      <button class="press-start" @click="startFight">PRESS START</button>
-      <p class="body-sm instructions">
-        DRAG TO WALK, HOLD THE DRAG TO RUN &middot; TAP TO CHAIN A 3-HIT COMBO<br />
-        FLICK &larr;&rarr; FOR A DASH STRIKE &middot; FLICK &uarr; TO JUMP (AGAIN MID-AIR TO STRIKE)<br />
-        PRESS AND HOLD STILL TO GUARD
+    <div v-else-if="screen === 'title'" class="screen title-screen dither-bg">
+      <div class="title-burst"></div>
+      <h1 class="title-huge">YOU<br />VS<br />WHO?!</h1>
+      <p class="subtitle">&mdash; AN OFFICE COMBO BRAWLER &mdash;</p>
+      <button class="press-start comic-btn" @click="startFight">PRESS START!</button>
+      <p class="instructions wobble-border">
+        DRAG to walk, hold the drag to run &middot; TAP to chain a 3-hit combo<br />
+        FLICK &larr;&rarr; for a dash strike &middot; FLICK &uarr; to jump (again mid-air to strike)<br />
+        PRESS &amp; HOLD still to guard
       </p>
-      <p class="footer-tag">1 CUBICLE // 1 RIVAL // 0 HR COMPLAINTS FILED</p>
+      <p class="footer-tag">1 CUBICLE &bull; 1 RIVAL &bull; 0 HR COMPLAINTS FILED</p>
     </div>
 
     <!-- Fight -->
@@ -470,19 +451,17 @@ onBeforeUnmount(() => {
       <div class="fight-hud">
         <div class="hud-side">
           <span class="hud-name">YOU</span>
-          <svg width="100" height="8" class="health-svg">
-            <rect x="0" y="0" width="100" height="8" fill="#000" />
-            <rect x="1" y="1" :width="Math.max(0, (playerHealth / 100) * 98)" height="6" :fill="playerHealth > 60 ? '#afd44b' : playerHealth > 30 ? '#fc5841' : '#ba1a1a'" />
-          </svg>
-          <span v-if="comboStep > 0" class="combo-badge">{{ comboStep }}-HIT</span>
+          <div class="health-bar wobble-border">
+            <div class="health-fill" :style="{ width: playerHealth + '%', background: playerHealth > 60 ? 'var(--c-green)' : playerHealth > 30 ? 'var(--c-yellow)' : 'var(--c-red)' }"></div>
+          </div>
+          <span v-if="comboStep > 0" class="combo-badge">{{ comboStep }}-HIT!</span>
         </div>
-        <div class="hud-timer">{{ timeRemaining }}</div>
+        <div class="hud-timer wobble-border">{{ timeRemaining }}</div>
         <div class="hud-side right">
           <span class="hud-name">RIVAL</span>
-          <svg width="100" height="8" class="health-svg">
-            <rect x="0" y="0" width="100" height="8" fill="#000" />
-            <rect x="1" y="1" :width="Math.max(0, (opponentHealth / 100) * 98)" height="6" :fill="opponentHealth > 60 ? '#afd44b' : opponentHealth > 30 ? '#fc5841' : '#ba1a1a'" />
-          </svg>
+          <div class="health-bar wobble-border">
+            <div class="health-fill" :style="{ width: opponentHealth + '%', background: opponentHealth > 60 ? 'var(--c-green)' : opponentHealth > 30 ? 'var(--c-yellow)' : 'var(--c-red)' }"></div>
+          </div>
         </div>
       </div>
 
@@ -494,28 +473,29 @@ onBeforeUnmount(() => {
           class="fight-canvas"
           :style="{ width: canvasDisplaySize.w + 'px', height: canvasDisplaySize.h + 'px' }"
         ></canvas>
-        <div v-if="gesture.blockHeld" class="block-indicator">GUARDING</div>
+        <div v-if="gesture.blockHeld" class="block-indicator">GUARDING!</div>
       </div>
 
       <div class="gesture-legend">
-        <span>&larr;&rarr; DRAG WALK / RUN</span>
-        <span>&uarr; FLICK JUMP / AIR STRIKE</span>
-        <span>TAP COMBO</span>
-        <span>FLICK &larr;&rarr; DASH STRIKE</span>
-        <span>HOLD GUARD</span>
+        <span>&larr;&rarr; drag walk/run</span>
+        <span>&uarr; flick jump/air strike</span>
+        <span>tap combo</span>
+        <span>flick &larr;&rarr; dash strike</span>
+        <span>hold guard</span>
       </div>
     </div>
 
     <!-- Results -->
-    <div v-else-if="screen === 'results'" class="screen results-screen">
+    <div v-else-if="screen === 'results'" class="screen results-screen dither-bg">
+      <div class="results-burst"></div>
       <template v-if="controller">
-        <h2 class="results-title" :class="{ lose: !controller.a.winner }">{{ resultTitle }}</h2>
+        <h2 class="results-title" :class="{ lose: !controller.a.winner }">{{ resultTitle }}!!</h2>
         <p class="results-sub">{{ resultSub }}</p>
-        <p class="results-quote">"{{ resultQuote }}"</p>
+        <p class="results-quote wobble-border">&ldquo;{{ resultQuote }}&rdquo;</p>
       </template>
       <div class="results-actions">
-        <button class="ready-btn" @click="rematch">REMATCH</button>
-        <button class="secondary-btn" @click="goTitle">MAIN MENU</button>
+        <button class="ready-btn comic-btn" @click="rematch">REMATCH!</button>
+        <button class="secondary-btn comic-btn" @click="goTitle">MAIN MENU</button>
       </div>
     </div>
   </div>
@@ -526,7 +506,7 @@ onBeforeUnmount(() => {
   position: relative;
   width: 100%;
   min-height: 100dvh;
-  background: var(--c-background);
+  background: var(--c-paper);
   overflow: hidden;
 }
 
@@ -546,35 +526,35 @@ onBeforeUnmount(() => {
   justify-content: center;
   gap: 24px;
   padding: 24px;
+  background: var(--c-blue);
 }
 .handheld {
   width: 340px;
-  background: var(--c-primary-container);
-  border: 4px solid #000;
-  border-right: 8px solid #000;
-  border-bottom: 8px solid #000;
+  background: var(--c-yellow);
+  border: 5px solid var(--c-ink);
   padding: 16px;
   display: flex;
   flex-direction: column;
   gap: 12px;
+  transform: rotate(-1deg);
 }
 .handheld-top {
   display: flex;
-  gap: 6px;
+  gap: 8px;
   justify-content: flex-end;
 }
 .dot {
-  width: 8px;
-  height: 8px;
-  border: 2px solid #000;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  border: 2px solid var(--c-ink);
 }
-.dot.red { background: var(--c-error); }
-.dot.amber { background: var(--c-secondary-container); }
-.dot.green { background: var(--c-tertiary-fixed); }
+.dot.red { background: var(--c-red); }
+.dot.yellow { background: var(--c-yellow-dark); }
+.dot.green { background: var(--c-green); }
 .handheld-screen {
-  background: var(--c-surface);
-  border: 3px solid #000;
-  box-shadow: inset 4px 4px 0 rgba(0, 0, 0, 0.15);
+  background: var(--c-panel);
+  border: 3px solid var(--c-ink);
   padding: 20px 16px;
   display: flex;
   flex-direction: column;
@@ -583,18 +563,18 @@ onBeforeUnmount(() => {
   text-align: center;
 }
 .title-lg {
-  font-family: var(--font-headline);
-  font-size: 22px;
-  font-weight: 700;
-  color: var(--c-primary);
+  font-family: var(--font-shout);
+  font-size: 32px;
+  color: var(--c-red);
+  -webkit-text-stroke: 1.5px var(--c-ink);
   margin: 0;
-  letter-spacing: -1px;
+  letter-spacing: 1px;
 }
-.sub { color: var(--c-on-surface-variant); margin: 0 0 8px; }
+.sub { color: var(--c-ink-soft); margin: 0 0 8px; }
 .qr-frame {
   width: 200px;
   height: 200px;
-  border: 3px solid #000;
+  border: 4px solid var(--c-ink);
   background: #fff;
   display: flex;
   align-items: center;
@@ -602,45 +582,19 @@ onBeforeUnmount(() => {
   overflow: hidden;
 }
 .qr-frame img { width: 100%; height: 100%; }
-.qr-fallback { font-size: 10px; font-family: var(--font-body); }
+.qr-fallback { font-size: 12px; }
 .scan-msg {
-  font-family: var(--font-headline);
-  font-weight: 700;
+  font-family: var(--font-shout);
   letter-spacing: 1px;
-  color: var(--c-secondary);
+  color: var(--c-red);
   margin: 8px 0 0;
+  font-size: 18px;
 }
-.handheld-bottom {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 8px 4px 0;
-}
-.dpad-mid { display: flex; }
-.dpad-up, .dpad-down { width: 14px; height: 14px; background: #000; margin: 0 auto; }
-.dpad-left, .dpad-right { width: 14px; height: 14px; background: #000; }
-.dpad-center { width: 14px; height: 14px; background: var(--c-primary-container); }
-.ab-buttons { display: flex; gap: 8px; align-items: flex-end; }
-.ab-btn {
-  width: 30px;
-  height: 30px;
-  border-radius: 50%;
-  border: 2px solid #000;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-weight: 700;
-  color: #fff;
-  font-family: var(--font-headline);
-  font-size: 12px;
-}
-.a-btn { background: var(--c-error); }
-.b-btn { background: var(--c-tertiary-fixed-dim); color: #161f00; }
 .desktop-note {
   max-width: 320px;
   text-align: center;
-  color: var(--c-on-surface-variant);
-  font-size: 12px;
+  color: #fff;
+  font-size: 13px;
 }
 
 /* ---------- Title ---------- */
@@ -648,63 +602,84 @@ onBeforeUnmount(() => {
   align-items: center;
   justify-content: center;
   text-align: center;
-  gap: 3vh;
+  gap: 2.5vh;
   padding: 24px;
-  background: var(--c-primary);
+  background: var(--c-blue);
   color: #fff;
 }
+.title-burst {
+  position: absolute;
+  top: 18%;
+  left: 50%;
+  width: 78vw;
+  height: 78vw;
+  max-width: 420px;
+  max-height: 420px;
+  transform: translate(-50%, -50%) rotate(8deg);
+  background: var(--c-yellow);
+  clip-path: polygon(
+    50% 0%, 61% 15%, 78% 6%, 78% 25%, 98% 25%, 87% 40%, 100% 50%,
+    87% 60%, 98% 75%, 78% 75%, 78% 94%, 61% 85%, 50% 100%, 39% 85%,
+    22% 94%, 22% 75%, 2% 75%, 13% 60%, 0% 50%, 13% 40%, 2% 25%,
+    22% 25%, 22% 6%, 39% 15%
+  );
+  opacity: 0.9;
+}
 .title-huge {
-  font-family: var(--font-headline);
-  font-size: 15vw;
-  line-height: 0.95;
-  font-weight: 700;
-  color: var(--c-secondary-container);
+  position: relative;
+  font-family: var(--font-shout);
+  font-size: 17vw;
+  line-height: 0.9;
+  color: var(--c-red);
   margin: 0;
-  letter-spacing: -2px;
-  -webkit-text-stroke: 2px #000;
+  letter-spacing: 1px;
+  -webkit-text-stroke: 3px var(--c-ink);
+  transform: rotate(-2deg);
 }
 .subtitle {
-  font-size: 12px;
-  letter-spacing: 2px;
-  color: var(--c-primary-fixed, #cce5ff);
+  position: relative;
+  font-family: var(--font-hand);
+  font-weight: 700;
+  font-size: 14px;
+  letter-spacing: 1px;
+  color: var(--c-yellow);
 }
 .press-start {
-  margin-top: 12px;
-  background: var(--c-secondary-container);
-  color: #000;
-  border: 3px solid #000;
-  padding: 14px 28px;
-  font-size: 16px;
-  font-weight: 700;
-  box-shadow: 4px 4px 0 #000;
-  animation: blink 1.1s steps(2, start) infinite;
-  text-transform: uppercase;
-  letter-spacing: 2px;
+  position: relative;
+  margin-top: 8px;
+  background: var(--c-red);
+  color: #fff;
+  padding: 14px 30px;
+  font-size: 22px;
+  animation: pulse 1.1s ease-in-out infinite;
 }
-.press-start:active { transform: translate(2px, 2px); box-shadow: 0 0 0 #000; }
-@keyframes blink { 50% { opacity: 0.55; } }
+@keyframes pulse { 50% { opacity: 0.82; } }
 .instructions {
+  position: relative;
   max-width: 320px;
-  font-size: 9px;
+  font-family: var(--font-hand);
+  font-size: 12px;
   line-height: 1.7;
-  letter-spacing: 0.5px;
-  color: var(--c-primary-fixed, #cce5ff);
-  opacity: 0.85;
+  color: var(--c-ink);
+  background: var(--c-panel);
+  padding: 10px 14px;
+  transform: rotate(-0.6deg);
 }
 .footer-tag {
   position: absolute;
   bottom: 16px;
   left: 0;
   right: 0;
-  font-size: 9px;
-  letter-spacing: 1px;
-  color: var(--c-primary-fixed, #cce5ff);
-  opacity: 0.7;
+  font-family: var(--font-hand);
+  font-size: 11px;
+  letter-spacing: 0.5px;
+  color: var(--c-yellow);
+  opacity: 0.9;
 }
 
 /* ---------- Fight ---------- */
 .fight-screen {
-  background: #000;
+  background: var(--c-ink);
   height: 100dvh;
   justify-content: space-between;
   touch-action: none;
@@ -714,23 +689,45 @@ onBeforeUnmount(() => {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 8px 12px;
+  padding: 10px 12px;
   color: #fff;
   gap: 8px;
 }
-.hud-side { display: flex; flex-direction: column; gap: 2px; position: relative; }
+.hud-side { display: flex; flex-direction: column; gap: 3px; position: relative; width: 120px; }
 .hud-side.right { align-items: flex-end; }
-.hud-name { font-family: var(--font-headline); font-size: 9px; letter-spacing: 0.5px; }
-.hud-timer { font-family: var(--font-headline); font-size: 16px; font-weight: 700; }
-.health-svg { image-rendering: pixelated; }
+.hud-name { font-family: var(--font-shout); font-size: 13px; letter-spacing: 0.5px; }
+.hud-timer {
+  font-family: var(--font-shout);
+  font-size: 22px;
+  color: var(--c-yellow);
+  background: var(--c-ink);
+  border: 3px solid var(--c-yellow);
+  border-radius: 50%;
+  width: 44px;
+  height: 44px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.health-bar {
+  width: 100%;
+  height: 12px;
+  background: #fff;
+  border: 2px solid var(--c-ink);
+  overflow: hidden;
+}
+.health-fill {
+  height: 100%;
+  transition: width 0.15s;
+}
 .combo-badge {
-  font-family: var(--font-headline);
-  font-size: 9px;
-  font-weight: 700;
-  color: #000;
-  background: var(--c-secondary-container);
-  border: 1px solid #000;
-  padding: 1px 5px;
+  font-family: var(--font-shout);
+  font-size: 12px;
+  letter-spacing: 0.5px;
+  color: var(--c-ink);
+  background: var(--c-yellow);
+  border: 2px solid var(--c-ink);
+  padding: 0px 6px;
   align-self: flex-start;
 }
 
@@ -744,8 +741,8 @@ onBeforeUnmount(() => {
   padding: 0 4px;
 }
 .fight-canvas {
-  border: 3px solid #fff;
-  background: #000;
+  border: 4px solid #fff;
+  background: var(--c-paper);
 }
 
 .block-indicator {
@@ -753,14 +750,13 @@ onBeforeUnmount(() => {
   bottom: 6px;
   left: 50%;
   transform: translateX(-50%);
-  font-family: var(--font-headline);
-  font-size: 10px;
-  font-weight: 700;
+  font-family: var(--font-shout);
+  font-size: 14px;
   letter-spacing: 1px;
-  color: #000;
-  background: var(--c-primary-fixed, #cce5ff);
-  border: 2px solid #000;
-  padding: 2px 10px;
+  color: var(--c-ink);
+  background: var(--c-yellow);
+  border: 2px solid var(--c-ink);
+  padding: 2px 12px;
 }
 
 .gesture-legend {
@@ -769,14 +765,13 @@ onBeforeUnmount(() => {
   justify-content: center;
   gap: 6px 10px;
   padding: 10px 14px 20px;
-  color: var(--c-outline-variant);
-  font-size: 8px;
-  letter-spacing: 0.5px;
-  text-transform: uppercase;
+  color: var(--c-paper-dim);
+  font-family: var(--font-hand);
+  font-size: 10px;
   text-align: center;
 }
 .gesture-legend span {
-  border: 1px solid var(--c-outline-variant);
+  border: 1px dashed var(--c-paper-dim);
   padding: 3px 6px;
 }
 
@@ -787,44 +782,68 @@ onBeforeUnmount(() => {
   text-align: center;
   gap: 10px;
   padding: 24px;
-  background: var(--c-primary);
+  background: var(--c-blue);
   color: #fff;
+  overflow: hidden;
+}
+.results-burst {
+  position: absolute;
+  top: 30%;
+  left: 50%;
+  width: 100vw;
+  height: 100vw;
+  max-width: 480px;
+  max-height: 480px;
+  transform: translate(-50%, -50%);
+  background: var(--c-yellow);
+  clip-path: polygon(
+    50% 0%, 61% 15%, 78% 6%, 78% 25%, 98% 25%, 87% 40%, 100% 50%,
+    87% 60%, 98% 75%, 78% 75%, 78% 94%, 61% 85%, 50% 100%, 39% 85%,
+    22% 94%, 22% 75%, 2% 75%, 13% 60%, 0% 50%, 13% 40%, 2% 25%,
+    22% 25%, 22% 6%, 39% 15%
+  );
+  opacity: 0.85;
 }
 .results-title {
-  font-family: var(--font-headline);
-  font-size: 40px;
-  color: var(--c-tertiary-fixed);
+  position: relative;
+  font-family: var(--font-shout);
+  font-size: 46px;
+  color: var(--c-green);
   margin: 0;
-  -webkit-text-stroke: 2px #000;
+  -webkit-text-stroke: 3px var(--c-ink);
+  transform: rotate(-2deg);
 }
-.results-title.lose { color: var(--c-secondary-container); }
-.results-sub { font-size: 11px; letter-spacing: 1px; opacity: 0.8; margin: 0 0 8px; }
-.results-quote { font-style: italic; max-width: 320px; margin: 8px 0 20px; }
-.results-actions { display: flex; flex-direction: column; gap: 10px; width: 100%; max-width: 280px; }
+.results-title.lose { color: var(--c-red); }
+.results-sub {
+  position: relative;
+  font-family: var(--font-hand);
+  font-weight: 700;
+  font-size: 14px;
+  letter-spacing: 1px;
+  opacity: 0.9;
+  margin: 0 0 8px;
+}
+.results-quote {
+  position: relative;
+  font-family: var(--font-hand);
+  color: var(--c-ink);
+  background: var(--c-panel);
+  max-width: 300px;
+  margin: 8px 0 20px;
+  padding: 12px 16px;
+  transform: rotate(0.8deg);
+}
+.results-actions { position: relative; display: flex; flex-direction: column; gap: 12px; width: 100%; max-width: 280px; }
 .secondary-btn {
-  background: transparent;
-  color: #fff;
-  border: 2px solid #fff;
-  border-right: 4px solid #fff;
-  border-bottom: 4px solid #fff;
-  padding: 10px;
-  font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 1px;
-  text-transform: uppercase;
+  background: var(--c-panel);
+  color: var(--c-ink);
+  padding: 12px;
+  font-size: 16px;
 }
-.secondary-btn:active { transform: translate(2px, 2px); border-right: 2px solid #fff; border-bottom: 2px solid #fff; }
 .ready-btn {
-  background: #000;
-  color: #fff;
-  border: 2px solid #fff;
-  padding: 14px;
-  font-size: 13px;
-  font-weight: 700;
-  letter-spacing: 1px;
-  text-transform: uppercase;
-  border-right: 4px solid #fff;
-  border-bottom: 4px solid #fff;
+  background: var(--c-yellow);
+  color: var(--c-ink);
+  padding: 15px;
+  font-size: 18px;
 }
-.ready-btn:active { transform: translate(2px, 2px); border-right: 2px solid #fff; border-bottom: 2px solid #fff; }
 </style>

@@ -2,7 +2,6 @@
 // Cropped to a shared 220x228 bounding box so animation motion stays anchored.
 
 const frameModules = import.meta.glob('./assets/fighter/*.png', { eager: true, import: 'default' }) as Record<string, string>
-const effectModules = import.meta.glob('./assets/effects/*.png', { eager: true, import: 'default' }) as Record<string, string>
 
 function framesFor(prefix: string): string[] {
   const entries = Object.entries(frameModules)
@@ -52,15 +51,10 @@ export const CLIPS: Record<AnimName, ClipDef> = {
   comboFinisher: { frames: comboFinisher, fps: 14, loop: false },
 }
 
-export const HIT_EFFECT_FRAMES = Object.entries(effectModules)
-  .sort(([a], [b]) => a.localeCompare(b, undefined, { numeric: true }))
-  .map(([, url]) => url)
-
 const preloaded: HTMLImageElement[] = []
 export function preloadSprites(): Promise<void> {
   const urls = new Set<string>()
   Object.values(CLIPS).forEach((c) => c.frames.forEach((f) => urls.add(f)))
-  HIT_EFFECT_FRAMES.forEach((f) => urls.add(f))
   const imgs = Array.from(urls).map((src) => {
     const img = new Image()
     img.src = src

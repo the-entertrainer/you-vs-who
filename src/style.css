@@ -1,30 +1,20 @@
 :root {
-  --c-surface: #fef9eb;
-  --c-surface-dim: #dedacc;
-  --c-surface-container-lowest: #ffffff;
-  --c-surface-container-low: #f8f3e5;
-  --c-surface-container: #f2eee0;
-  --c-surface-container-high: #ede8da;
-  --c-surface-container-highest: #e7e2d5;
-  --c-on-surface: #1d1c13;
-  --c-on-surface-variant: #42474d;
-  --c-outline: #73777e;
-  --c-outline-variant: #c2c7ce;
-  --c-primary: #0f3651;
-  --c-on-primary: #ffffff;
-  --c-primary-container: #2a4d69;
-  --c-secondary: #b62515;
-  --c-secondary-container: #fc5841;
-  --c-tertiary: #2a3900;
-  --c-tertiary-container: #3e5100;
-  --c-tertiary-fixed: #cbf164;
-  --c-tertiary-fixed-dim: #afd44b;
-  --c-error: #ba1a1a;
-  --c-background: #fef9eb;
-  --c-ink: #000000;
+  --c-paper: #fff6e5;
+  --c-paper-dim: #f2e6c9;
+  --c-panel: #ffffff;
+  --c-ink: #0a0a0a;
+  --c-ink-soft: #2b2620;
+  --c-red: #ee2b2b;
+  --c-red-dark: #a90f0f;
+  --c-yellow: #ffd23f;
+  --c-yellow-dark: #f2a900;
+  --c-blue: #1c3fa8;
+  --c-blue-dark: #10265f;
+  --c-green: #2fb84f;
+  --c-purple: #7b3fa0;
 
-  --font-headline: 'Space Mono', monospace;
-  --font-body: 'JetBrains Mono', monospace;
+  --font-shout: 'Bangers', 'Space Mono', cursive;
+  --font-hand: 'Kalam', 'JetBrains Mono', sans-serif;
 }
 
 * {
@@ -36,16 +26,13 @@ html, body {
   padding: 0;
   width: 100%;
   height: 100%;
-  background: var(--c-background);
-  color: var(--c-on-surface);
-  font-family: var(--font-body);
+  background: var(--c-paper);
+  color: var(--c-ink);
+  font-family: var(--font-hand);
   overscroll-behavior: none;
   -webkit-tap-highlight-color: transparent;
   -webkit-user-select: none;
   user-select: none;
-  text-rendering: pixelated;
-  -webkit-font-smoothing: none;
-  font-smooth: never;
 }
 
 #app {
@@ -55,27 +42,46 @@ html, body {
 }
 
 button {
-  font-family: var(--font-headline);
+  font-family: var(--font-shout);
   cursor: pointer;
   touch-action: manipulation;
 }
 
-img, canvas {
-  image-rendering: pixelated;
-  image-rendering: -moz-crisp-edges;
-  image-rendering: crisp-edges;
+img {
+  image-rendering: auto;
 }
 
-.scanlines {
-  position: absolute;
-  inset: 0;
-  pointer-events: none;
-  background: linear-gradient(rgba(0, 0, 0, 0) 50%, rgba(0, 0, 0, 0.08) 50%);
-  background-size: 100% 4px;
-  z-index: 50;
-}
-
+/* big loose halftone dots, comic-print style */
 .dither-bg {
-  background-image: radial-gradient(var(--c-outline-variant) 1px, transparent 0);
-  background-size: 3px 3px;
+  background-image: radial-gradient(var(--c-ink) 1.6px, transparent 0);
+  background-size: 15px 15px;
+  background-position: -4px -4px;
+  opacity: 1;
+}
+
+/* hand-scribbled, slightly wobbly rectangle border via SVG turbulence filter */
+.wobble-border {
+  filter: url(#wobble);
+}
+.wobble-border-lg {
+  filter: url(#wobble-lg);
+}
+
+/* thick ink outline + hard offset shadow, comic panel look */
+.comic-panel {
+  background: var(--c-panel);
+  border: 3px solid var(--c-ink);
+  box-shadow: 6px 6px 0 var(--c-ink);
+}
+
+.comic-btn {
+  font-family: var(--font-shout);
+  letter-spacing: 1px;
+  border: 3px solid var(--c-ink);
+  box-shadow: 5px 5px 0 var(--c-ink);
+  transition: transform 0.05s;
+}
+.comic-btn:active {
+  transform: translate(4px, 4px);
+  box-shadow: 1px 1px 0 var(--c-ink);
 }
