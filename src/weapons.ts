@@ -24,7 +24,15 @@ const GUN_IMAGES: HTMLImageElement[] = GUN_SRCS.map((src) => {
   img.src = src
   return img
 })
-const GUN_DISPLAY_W = 34
+
+// Source guns range from a stubby 49x14 pistol to a long 102x36 SMG. Scaling
+// every one to a fixed width made the long guns look thin and the stubby
+// ones look tiny — fitting each into the same bounding box instead keeps
+// every gun a consistent, chunky, "cartoony prop" size relative to the
+// character (roughly half the sprite's own width) no matter its native
+// aspect ratio.
+const GUN_MAX_W = 46
+const GUN_MAX_H = 26
 
 /** The fighter's randomly-dealt pixel-art gun, held forward, with a bright muzzle flash on the frame it fires. */
 export function drawGunOverlay(ctx: CanvasRenderingContext2D, f: FighterState) {
@@ -35,15 +43,18 @@ export function drawGunOverlay(ctx: CanvasRenderingContext2D, f: FighterState) {
   ctx.translate(hx, hy)
   ctx.scale(f.facing, 1)
 
-  const aspect = img.naturalWidth > 0 ? img.naturalHeight / img.naturalWidth : 0.35
-  const h = GUN_DISPLAY_W * aspect
+  const nw = img.naturalWidth || 60
+  const nh = img.naturalHeight || 20
+  const scale = Math.min(GUN_MAX_W / nw, GUN_MAX_H / nh)
+  const w = nw * scale
+  const h = nh * scale
   if (img.complete && img.naturalWidth > 0) {
-    ctx.drawImage(img, -6, -h / 2, GUN_DISPLAY_W, h)
+    ctx.drawImage(img, -6, -h / 2, w, h)
   }
 
   const firing = ATTACK_ANIMS.has(f.anim) && !f.moveHasHit && f.frame >= (f.anim === 'comboFinisher' ? 2 : 1)
   if (firing) {
-    const mx = GUN_DISPLAY_W - 8
+    const mx = w - 8
     const grad = ctx.createRadialGradient(mx, 0, 0, mx, 0, 14)
     grad.addColorStop(0, 'rgba(255, 230, 160, 0.9)')
     grad.addColorStop(1, 'rgba(255, 180, 60, 0)')
